@@ -814,6 +814,34 @@ def _lic(val):
     if val.startswith("http"): val = val.rstrip("/").split("/")[-1]
     return val or "—"
 
+def _clean_repo_url(url) -> str:
+    """
+    Normalize a repository URL to a clean https:// link.
+
+    npm returns URLs like:
+      git+https://github.com/axios/axios.git
+      git://github.com/axios/axios.git
+      https://github.com/axios/axios.git
+
+    All of these should become:
+      https://github.com/axios/axios
+    """
+    if not url or url in ("N/A", "—", ""):
+        return "N/A"
+    if isinstance(url, dict):
+        url = url.get("url", "N/A")
+    url = str(url).strip()
+    # Strip git+ or git:// prefix
+    url = re.sub(r"^git\+", "", url)
+    url = re.sub(r"^git://", "https://", url)
+    # Strip .git suffix
+    if url.endswith(".git"):
+        url = url[:-4]
+    # Ensure https://
+    if url.startswith("http://"):
+        url = "https://" + url[7:]
+    return url or "N/A"
+
 def _fmt_date(s):
     """Return YYYY-MM-DD from any ISO-ish string, or '—'."""
     if not s or str(s).strip() in ("—","N/A",""): return "—"
@@ -831,6 +859,31 @@ def _fmt_date(s):
         except: return "—"
     # ISO / RFC 3339 strings
     return s[:10] if len(s) >= 10 else "—"
+
+# ── Abandoned Package Detection ────────────────────────────────────────────────
+def _pkg_status(last_updated: str) -> str:
+    """
+    Classify a package as Active / Aging / Abandoned based on last update date.
+
+      ✅ Active    — updated within the last 6 months
+      ⚠️ Aging     — last update between 6 months and 2 years ago
+      🚨 Abandoned — no update in more than 2 years
+      ❓ Unknown   — no date data available
+    """
+    if not last_updated or last_updated in ("—", "N/A", ""):
+        return "❓ Unknown"
+    try:
+        date = datetime.datetime.strptime(last_updated[:10], "%Y-%m-%d")
+        now  = datetime.datetime.utcnow()
+        days = (now - date).days
+        if days <= 180:
+            return "✅ Active"
+        elif days <= 730:
+            return "⚠️ Aging"
+        else:
+            return "🚨 Abandoned"
+    except Exception:
+        return "❓ Unknown"
 
 # ── Maintainer helpers ─────────────────────────────────────────────────────────
 _ORG_TOKENS = {
@@ -2145,7 +2198,7 @@ class NPMAdapter(BaseAdapter):
                             base, "NPM", v2,
                             d2.get("description", ""), d2.get("license", ""),
                             dl2, m2, c2,
-                            repo2.get("url", "N/A") if isinstance(repo2, dict) else (repo2 or "N/A"),
+                            _clean_repo_url(repo2),
                             last_updated=lu2)
             except Exception:
                 pass
@@ -2155,7 +2208,7 @@ class NPMAdapter(BaseAdapter):
         c = check_vuln(pkg,"npm")
         return _row(pkg, "NPM", v, d.get("description",""), d.get("license",""),
                     dl, m, c,
-                    repo.get("url","N/A") if isinstance(repo,dict) else (repo or "N/A"),
+                    _clean_repo_url(repo),
                     last_updated=last_updated)
 
     def search(self, q, **kw):
@@ -2433,15 +2486,34 @@ class MavenAdapter(BaseAdapter):
 
         full = f"{d.get('g')}:{d.get('a')}"
         g    = d.get("g", "")
+        a_id = d.get("a", "")
         m    = _m_org(g)
         c    = check_vuln(full, "Maven")
-        desc = f"{g}  ·  {d.get('a', '')}"
+        desc = f"{g}  ·  {a_id}"
         ts   = d.get("timestamp", 0)
         last_updated = (datetime.datetime.utcfromtimestamp(ts / 1000).strftime("%Y-%m-%d")
                         if ts else "—")
-        return _row(full, "Maven Central", d.get("latestVersion", "N/A"),
+
+        # The Solr `latestVersion` field can be stale/cached.
+        # Fetch the real latest version via the GAV core (sorted newest first).
+        latest_ver = d.get("latestVersion", "N/A")
+        try:
+            gav_r = requests.get(
+                f"https://search.maven.org/solrsearch/select"
+                f"?q=g:{requests.utils.quote(g)}+AND+a:{requests.utils.quote(a_id)}"
+                f"&core=gav&rows=1&wt=json",
+                timeout=TIMEOUT
+            )
+            if gav_r.status_code == 200:
+                gav_docs = gav_r.json().get("response", {}).get("docs", [])
+                if gav_docs:
+                    latest_ver = gav_docs[0].get("v", latest_ver)
+        except Exception:
+            pass
+
+        return _row(full, "Maven Central", latest_ver,
                     desc, "Apache-2.0", 0, m, c,
-                    f"https://mvnrepository.com/artifact/{d.get('g')}/{d.get('a')}",
+                    f"https://mvnrepository.com/artifact/{g}/{a_id}",
                     last_updated=last_updated)
 
     def search(self, q, **kw):
@@ -3986,9 +4058,59 @@ if "scan_data" in st.session_state:
                 f' {total} packages across {regs} registries</span></div>',
                 unsafe_allow_html=True)
 
-            st.dataframe(df, use_container_width=True, hide_index=True,
-                height=min(56+38*len(df), 640),
+            # ── Abandoned Package Detection ───────────────────────────────
+            # Add Status column based on Last Updated date
+            disp_df = df.copy()
+            disp_df.insert(
+                disp_df.columns.get_loc("Last Updated"),
+                "Status",
+                disp_df["Last Updated"].apply(_pkg_status)
+            )
+
+            # Count by status
+            _abandoned = (disp_df["Status"] == "🚨 Abandoned").sum()
+            _aging     = (disp_df["Status"] == "⚠️ Aging").sum()
+            _active    = (disp_df["Status"] == "✅ Active").sum()
+            _unknown   = (disp_df["Status"] == "❓ Unknown").sum()
+
+            # Show warning banners
+            if _abandoned > 0:
+                st.error(
+                    f"🚨 **{_abandoned} abandoned package{'s' if _abandoned > 1 else ''}** "
+                    f"found — no updates in 2+ years. Consider finding alternatives.",
+                    icon="🚨"
+                )
+            if _aging > 0:
+                st.warning(
+                    f"⚠️ **{_aging} aging package{'s' if _aging > 1 else ''}** "
+                    f"found — last updated between 6 months and 2 years ago.",
+                    icon="⚠️"
+                )
+
+            # Status filter
+            _status_options = ["All", "✅ Active", "⚠️ Aging", "🚨 Abandoned", "❓ Unknown"]
+            _status_counts  = {
+                "All":           len(disp_df),
+                "✅ Active":     _active,
+                "⚠️ Aging":      _aging,
+                "🚨 Abandoned":  _abandoned,
+                "❓ Unknown":    _unknown,
+            }
+            _sf1, _sf2 = st.columns([2, 3])
+            _status_filter = _sf1.selectbox(
+                "Filter by package status",
+                options=_status_options,
+                format_func=lambda x: f"{x}  ({_status_counts[x]})",
+                index=0,
+                key="status_filter"
+            )
+            if _status_filter != "All":
+                disp_df = disp_df[disp_df["Status"] == _status_filter]
+
+            st.dataframe(disp_df, use_container_width=True, hide_index=True,
+                height=min(56+38*len(disp_df), 640),
                 column_config={
+                    "Status":       st.column_config.TextColumn("Status",       width="small"),
                     "Library":      st.column_config.TextColumn("Package",      width="medium"),
                     "Registry":     st.column_config.TextColumn("Registry",     width="medium"),
                     "Version":      st.column_config.TextColumn("Version",      width="small"),
@@ -4164,10 +4286,12 @@ if "scan_data" in st.session_state:
                         )
 
             # ── Standard exports ──────────────────────────────────────────────
+            # Use disp_df (which includes the Status column) for all exports
+            # so downloaded files match exactly what the user sees on screen.
             st.markdown("---")
-            json_str = df.to_json(orient="records", indent=2)
+            json_str = disp_df.to_json(orient="records", indent=2)
             e1,e2,e3 = st.columns(3)
-            e1.download_button("⬇ Export CSV",  df.to_csv(index=False),
+            e1.download_button("⬇ Export CSV",  disp_df.to_csv(index=False),
                                "registry_scan.csv","text/csv", use_container_width=True)
             e2.download_button("⬇ Export JSON", json_str,
                                "registry_scan.json","application/json", use_container_width=True)
