@@ -2414,8 +2414,10 @@ class PackagistAdapter(BaseAdapter):
         if stables and stables[0] in all_ver:
             last_updated = all_ver[stables[0]].get("time","") or "—"
         c = check_vuln(full,"Packagist")
+        # Library shows just the package name (clean). Vendor stays in Maintainer.
         # Source button → always the Packagist page for this package
-        return _row(full, "Packagist", v,
+        pkg_name = full.split("/")[-1] if "/" in full else full
+        return _row(pkg_name, "Packagist", v,
                     pk.get("description",""), lic, dl, m, c,
                     f"https://packagist.org/packages/{full}",
                     last_updated=last_updated)
@@ -2425,10 +2427,10 @@ class PackagistAdapter(BaseAdapter):
             f"https://packagist.org/search.json?q={requests.utils.quote(q)}&per_page={SEARCH_LIMIT}",
             timeout=TIMEOUT)
         if r.status_code != 200: return []
-        return [_row(p.get("name","?"), "Packagist", "N/A",
+        return [_row(p.get("name","?").split("/")[-1], "Packagist", "N/A",
                      p.get("description",""), "—", 0,
                      _m_org(p.get("name","?").split("/")[0]), "—",
-                     p.get("url","N/A"),
+                     f"https://packagist.org/packages/{p.get('name','')}",
                      last_updated="—")
                 for p in r.json().get("results",[])]
 
@@ -2577,7 +2579,9 @@ class MavenAdapter(BaseAdapter):
         except Exception:
             pass
 
-        return _row(full, "Maven Central", latest_ver,
+        # Library column shows just the artifact name (clean) — full coordinates
+        # are still preserved in Maintainer ("Org · {g}") and Description ("{g} · {a}")
+        return _row(a_id, "Maven Central", latest_ver,
                     desc, "Apache-2.0", 0, m, c,
                     f"https://mvnrepository.com/artifact/{g}/{a_id}",
                     last_updated=last_updated)
@@ -2592,7 +2596,7 @@ class MavenAdapter(BaseAdapter):
             ts   = d.get("timestamp", 0)
             lud  = (datetime.datetime.utcfromtimestamp(ts/1000).strftime("%Y-%m-%d")
                     if ts else "—")
-            out.append(_row(f"{d.get('g')}:{d.get('a')}", "Maven Central",
+            out.append(_row(d.get("a","?"), "Maven Central",
                             d.get("latestVersion","N/A"),
                             f"{d.get('g','')}  ·  {d.get('a','')}", "Apache-2.0", 0,
                             _m_org(d.get("g","")), "—",
@@ -2709,7 +2713,8 @@ class DockerHubAdapter(BaseAdapter):
         else:
             m = _m_org(ns)
         last_updated = d.get("last_updated","") or "—"
-        return _row(f"{ns}/{nm}", "Docker Hub", ver_label,
+        # Library shows just the image name; namespace stays in Maintainer
+        return _row(nm, "Docker Hub", ver_label,
                     _trunc(d.get("full_description") or d.get("description",""),72),
                     "—", d.get("pull_count",0), m, "—",
                     f"https://hub.docker.com/r/{ns}/{nm}",
@@ -2725,7 +2730,7 @@ class DockerHubAdapter(BaseAdapter):
             ow = res.get("repo_owner") or "library"
             nm = res.get("repo_name","?")
             m  = "Org · Docker Official" if res.get("is_official") else _m_org(ow)
-            out.append(_row(f"{ow}/{nm}", "Docker Hub", "see tags",
+            out.append(_row(nm, "Docker Hub", "see tags",
                             _trunc(res.get("short_description",""),72),
                             "—", res.get("pull_count",0), m, "—",
                             f"https://hub.docker.com/r/{ow}/{nm}",
@@ -2747,7 +2752,8 @@ class HuggingFaceAdapter(BaseAdapter):
             author   = d.get("author","") or mid.split("/")[0]
             m        = _m_org(author) if "/" in mid else _m_user(author)
             lm       = d.get("lastModified","") or "—"
-            return _row(mid, "Hugging Face", lm[:10],
+            model_name = mid.split("/")[-1] if "/" in mid else mid
+            return _row(model_name, "Hugging Face", lm[:10],
                         desc, lic, d.get("downloads",0), m, "—",
                         f"https://huggingface.co/{mid}",
                         last_updated=lm)
@@ -2764,7 +2770,8 @@ class HuggingFaceAdapter(BaseAdapter):
                 author   = d.get("author","") or mid.split("/")[0]
                 m        = _m_org(author) if "/" in mid else _m_user(author)
                 lm       = d.get("lastModified","") or "—"
-                return _row(mid, "Hugging Face", lm[:10],
+                model_name = mid.split("/")[-1] if "/" in mid else mid
+                return _row(model_name, "Hugging Face", lm[:10],
                             desc, "—", d.get("downloads",0), m, "—",
                             f"https://huggingface.co/{mid}",
                             last_updated=lm)
@@ -2783,7 +2790,8 @@ class HuggingFaceAdapter(BaseAdapter):
             author   = d.get("author","") or (mid.split("/")[0] if "/" in mid else "")
             m        = _m_org(author) if "/" in mid else _m_user(author)
             lm       = d.get("lastModified","") or "—"
-            rows.append(_row(mid, "Hugging Face", lm[:10],
+            model_name = mid.split("/")[-1] if "/" in mid else mid
+            rows.append(_row(model_name, "Hugging Face", lm[:10],
                              desc, "—", d.get("downloads",0), m, "—",
                              f"https://huggingface.co/{mid}",
                              last_updated=lm))
@@ -2836,9 +2844,9 @@ class TerraformAdapter(BaseAdapter):
         if not mods: return None
         mo = mods[0]
         if not _exact_match(pkg, mo.get("name","")): return None
-        # ID format: namespace/name/provider
+        # ID format: namespace/name/provider — show just the module name in Library
         namespace = mo.get("id","").split("/")[0] if "/" in mo.get("id","") else "—"
-        return _row(mo.get("id",pkg), "Terraform Registry", mo.get("version","N/A"),
+        return _row(mo.get("name", pkg), "Terraform Registry", mo.get("version","N/A"),
                     mo.get("description","—"), "MPL-2.0",
                     mo.get("downloads",0), _m_org(namespace), "—",
                     f"https://registry.terraform.io/modules/{mo.get('id','')}",
@@ -2849,7 +2857,7 @@ class TerraformAdapter(BaseAdapter):
             f"https://registry.terraform.io/v1/modules?q={requests.utils.quote(q)}&limit={SEARCH_LIMIT}",
             timeout=TIMEOUT)
         if r.status_code != 200: return []
-        return [_row(mo.get("id","?"), "Terraform Registry", mo.get("version","N/A"),
+        return [_row(mo.get("name","?"), "Terraform Registry", mo.get("version","N/A"),
                      mo.get("description","—"), "MPL-2.0",
                      mo.get("downloads",0),
                      _m_org(mo.get("id","?").split("/")[0] if "/" in mo.get("id","?") else "—"),
@@ -2871,8 +2879,9 @@ class AnsibleGalaxyAdapter(BaseAdapter):
         d  = res[0]
         if not _exact_match(pkg, d.get("name","")): return None
         ns = (d.get("summary_fields") or {}).get("namespace",{}).get("name","—")
+        # Library shows just the role name; namespace stays in Maintainer
         # Source button → always the Ansible Galaxy page
-        return _row(f"{ns}.{d.get('name',pkg)}", "Ansible Galaxy",
+        return _row(d.get("name", pkg), "Ansible Galaxy",
                     d.get("version","N/A"), d.get("description",""), "—",
                     d.get("download_count",0),
                     _m_user(ns), "—",
@@ -2890,7 +2899,7 @@ class AnsibleGalaxyAdapter(BaseAdapter):
             ns = (d.get("namespace") or {}).get("name","?") \
                  if isinstance(d.get("namespace"),dict) else d.get("namespace","?")
             hv = d.get("highest_version") or {}
-            out.append(_row(f"{ns}.{d.get('name','?')}", "Ansible Galaxy",
+            out.append(_row(d.get("name","?"), "Ansible Galaxy",
                             hv.get("version","N/A"), d.get("description","—"), "—", 0,
                             _m_user(ns), "—",
                             f"https://galaxy.ansible.com/{ns}/{d.get('name','')}",
@@ -2958,8 +2967,10 @@ class VSCodeAdapter(BaseAdapter):
                      if s.get("statisticName")=="install"),0)
         pub_display  = pub.get("displayName") or pub.get("publisherName","—")
         last_updated = ver.get("lastUpdated","") or "—"
+        # Library shows just the extension name; publisher stays in Maintainer
         # Source button → always the VS Code Marketplace page
-        return _row(fid, "VS Code Marketplace", ver.get("version","N/A"),
+        return _row(ext.get("extensionName", fid), "VS Code Marketplace",
+                    ver.get("version","N/A"),
                     ext.get("shortDescription",""), "—", inst,
                     _m_auto(pub_display), "—",
                     f"https://marketplace.visualstudio.com/items?itemName={fid}",
@@ -2984,7 +2995,7 @@ class VSCodeAdapter(BaseAdapter):
                          if s.get("statisticName")=="install"),0)
             pub_display = pub.get("displayName") or pub.get("publisherName","—")
             _fid = f"{pub.get('publisherName')}.{ext.get('extensionName')}"
-            out.append(_row(_fid,
+            out.append(_row(ext.get("extensionName", _fid),
                             "VS Code Marketplace", ver.get("version","N/A"),
                             ext.get("shortDescription",""), "—", inst,
                             _m_auto(pub_display), "—",
@@ -3007,7 +3018,8 @@ class GHCRAdapter(BaseAdapter):
             if r.status_code == 200:
                 v = r.json()[0].get("name","N/A") if r.json() else "N/A"
                 m = _m_org(owner) if ent == "orgs" else _m_user(owner)
-                return _row(pkg, "GHCR", v,
+                # Library shows just the image name; owner stays in Maintainer
+                return _row(p, "GHCR", v,
                             "GitHub Container Registry", "—", 0, m, "—",
                             f"https://ghcr.io/{pkg}",
                             last_updated="—")
@@ -3025,8 +3037,10 @@ class KaggleAdapter(BaseAdapter):
         if not res: return None
         d   = res[0]; ref = d.get("ref",pkg)
         owner = ref.split("/")[0] if "/" in ref else "—"
+        dataset_name = ref.split("/")[-1] if "/" in ref else ref
         lud = str(d.get("lastUpdated","")) or "—"
-        return _row(ref, "Kaggle", lud[:10],
+        # Library shows just the dataset name; owner stays in Maintainer
+        return _row(dataset_name, "Kaggle", lud[:10],
                     d.get("subtitle",""), "—", d.get("downloadCount",0),
                     _m_user(owner), "—", f"https://kaggle.com/datasets/{ref}",
                     last_updated=lud)
@@ -3037,7 +3051,7 @@ class KaggleAdapter(BaseAdapter):
             f"https://www.kaggle.com/api/v1/datasets/list?search={requests.utils.quote(q)}&page=1&pageSize={SEARCH_LIMIT}",
             auth=(kaggle_username,kaggle_key), timeout=TIMEOUT)
         if r.status_code != 200: return []
-        return [_row(d.get("ref","?"), "Kaggle",
+        return [_row(d.get("ref","?").split("/")[-1], "Kaggle",
                      str(d.get("lastUpdated",""))[:10] or "N/A",
                      d.get("subtitle",""), "—", d.get("downloadCount",0),
                      _m_user(d.get("ref","?").split("/")[0] if "/" in d.get("ref","?") else "—"),
@@ -3055,7 +3069,8 @@ class NexusModsAdapter(BaseAdapter):
             headers={"apikey":nexus_key}, timeout=TIMEOUT)
         if r.status_code != 200: return None
         d = r.json()
-        return _row(d.get("name",pkg), "Nexus Mods", d.get("version","N/A"),
+        # Library shows just the mod name (Nexus Mods already returns clean name)
+        return _row(d.get("name", mod_id), "Nexus Mods", d.get("version","N/A"),
                     d.get("summary",""), "—", d.get("mod_downloads",0),
                     _m_user(d.get("user",{}).get("name","—")), "—",
                     d.get("nexusmods_url","N/A"),
@@ -3769,7 +3784,8 @@ class ECRPublicAdapter(BaseAdapter):
         logo   = repo.get("logoImageBlob","")
         url    = f"https://gallery.ecr.aws/{alias}/{name}" if alias else f"https://gallery.ecr.aws/{name}"
         m      = _m_org(alias) if alias else "—"
-        return _row(f"{alias}/{name}", "ECR Public", "latest",
+        # Library shows just the repo name; alias stays in Maintainer
+        return _row(name, "ECR Public", "latest",
                     desc, "—", pulls, m, "—", url, last_updated="—")
 
     def fetch(self, pkg, **kw):
