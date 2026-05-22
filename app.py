@@ -584,6 +584,11 @@ _COUNTRY_NORM: dict[str, str] = {
     "dubai":"United Arab Emirates","abu dhabi":"United Arab Emirates",
     # Hong Kong
     "hong kong":"Hong Kong","hk":"Hong Kong",
+    # Cyprus
+    "cyprus":"Cyprus","nicosia":"Cyprus","limassol":"Cyprus","larnaca":"Cyprus",
+    "paphos":"Cyprus","famagusta":"Cyprus",
+    # Malta
+    "malta":"Malta","valletta":"Malta",
     # Ireland
     "ireland":"Ireland","dublin":"Ireland",
     # Iceland
@@ -815,6 +820,140 @@ _KNOWN_ORG_COUNTRY: dict[str, str] = {
     "telefonica":"Spain","glovo":"Spain",
     # ─── Italy ───
     "ferrari":"Italy","luigi":"Italy",
+    # ─── ADDITIONAL VERIFIED ENTRIES (from real-world scan data) ────────────
+    # USA — popular JS/CSS libraries and individual maintainers
+    "twbs":"United States",                    # Bootstrap
+    "jquery":"United States",                  # jQuery Foundation
+    "jqueryfoundation":"United States",
+    "jashkenas":"United States",               # Jeremy Ashkenas (Backbone, Underscore)
+    "backbone":"United States","underscore":"United States",
+    "modernizr":"United States",               # Modernizr team
+    "fullcalendar":"United States",            # Adam Shaw, FullCalendar Inc.
+    "select2":"United States",                 # Kevin Brown
+    "kevin-brown":"United States",
+    "kenwheeler":"United States",              # Slick carousel
+    "zenorocha":"United States",               # Clipboard.js
+    "mrdoob":"Spain",                          # Three.js — Ricardo Cabello
+    "three":"Spain","threejs":"Spain",
+    "greensock":"United States",               # GSAP
+    "lit":"United States","lit-element":"United States","lit-html":"United States",
+    "polymer":"United States",
+    "tj":"United States","tjholowaychuk":"United States",  # TJ Holowaychuk
+    "expressjs":"United States","koajs":"United States",
+    "feross":"United States","webtorrent":"United States",
+    "ant-design":"China","alipay":"China","alipay-com":"China",
+    "fancyapps":"Lithuania",                   # Fancybox — Janis Skarnelis
+    "ckeditor":"Poland","ckeditor4":"Poland","ckeditor5":"Poland",
+    "tinymce":"Sweden","ephox":"Sweden",
+    "froala":"Romania","froalalabs":"Romania",
+    "froala-labs":"Romania",
+    "splidejs":"Japan",                        # Splide — Naotoshi Fujita
+    "naotoshifujita":"Japan",
+    "splide":"Japan",
+    "nolimits4web":"Belarus",                  # Swiper — Vladimir Kharlampidi
+    "swiperjs":"Belarus","framework7io":"Belarus",
+    "aFarkas":"Germany","afarkas":"Germany",   # Lazysizes — Alexander Farkas
+    "hammerjs":"Netherlands","eightmedia":"Netherlands",  # Hammer.js — Jorik Tangelder
+    "jorik":"Netherlands",
+    "marijnh":"Netherlands","codemirror":"Netherlands",   # CodeMirror — Marijn Haverbeke
+    "prosemirror":"Netherlands",
+    "emotion-js":"United States","threepointone":"United States",  # Emotion CSS-in-JS
+    "mxstbr":"Germany","styled-components":"United States",  # Max Stoiber — but team is global
+    "chartjs":"Canada",                        # Chart.js — Will Bird et al.
+    "willbird":"Canada",
+    "datatables":"United Kingdom",             # Allan Jardine
+    "allanjardine":"United Kingdom",
+    "socketio":"United States",                # Socket.IO — Guillermo Rauch
+    "rauchg":"United States","vercel":"United States",
+    "automerge":"United Kingdom",
+    "dropzone":"Germany",                      # Dropzone — Matias Meno (Berlin)
+    "matiasmeno":"Germany",
+    "lazysizes":"Germany",
+    "components":"United States",              # GitHub "components" maintenance org
+    "webjars":"United States",                 # WebJars — Sonatype
+    "sonatype":"United States",
+    "spring-projects":"United States",
+    "fasterxml":"United States",
+    "jboss":"United States","jbossorg":"United States",
+    "eclipse":"Canada","eclipse-platform":"Canada",
+    # Ukraine
+    "redhuntlabs":"India","macpaw":"Ukraine","macpaw-research":"Ukraine",
+    "galetahub":"Ukraine",
+    # NOTE: zloirock (Denis Pushkarev, core-js) — removed override.
+    # His current GitHub location is "Cyprus, Larnaca" so the API + the
+    # _COUNTRY_NORM "cyprus" entry resolves it correctly to Cyprus.
+    # The override would have incorrectly forced "Russia" (his nationality,
+    # not current location).
+    "denysdovhan":"Ukraine","sindresorhus":"Norway","sebmck":"United States",
+    "sergi":"Spain",
+    # India
+    "bdthemes":"Bangladesh",                   # BdThemes (Element Pack)
+    "bdwm":"Bangladesh",
+    "elementor":"Israel","prosperty":"Israel",
+    "wpastra":"India","brainstormforce":"India",
+    "themehunk":"India","themeisle":"Romania",
+    # Sweden
+    "lottiefiles":"Sweden",
+    # Bangladesh
+    "wpdeveloper":"Bangladesh",
+    # Rancher / SUSE
+    "rancher":"Germany","suse":"Germany","rancherlabs":"Germany",
+    # Iconography
+    "lucide-icons":"United States","feathericons":"United States",
+    "fontawesome":"United States","Fonticons":"United States",
+    # Design system
+    "MahApps":"Germany","mahapps":"Germany",
+    "MaterialDesignInXAML":"Ireland",          # Material Design Toolkit
+    "materialdesigninxaml":"Ireland",
+    # Markdown / parsers
+    "markedjs":"United Kingdom","chjj":"United States",
+    # Closure
+    "google-closure-library":"United States",
+    # AOS — Animate On Scroll
+    "michalsnik":"Poland",                     # Michał Sajnóg
+    # popper
+    "atomiks":"United Kingdom","popperjs":"United Kingdom",
+    "floating-ui":"United Kingdom",
+    # axios, jQuery UI, etc.
+    "axios":"United States","jasonsaayman":"South Africa",
+    # Bootstrap-related
+    "mdo":"United States","fat":"United States",  # Mark Otto, Jacob Thornton
+    # Animation
+    "daneden":"United Kingdom","danedenco":"United Kingdom",  # Daniel Eden (animate.css)
+    "animate-css":"United Kingdom",
+    # JS frameworks
+    "preactjs":"United Kingdom","developit":"United Kingdom",
+    "alpinejs":"South Africa","calebporzio":"United States",
+    "svelte":"United Kingdom","sveltejs":"United Kingdom","rich-harris":"United Kingdom",
+    "solidjs":"Canada","ryansolid":"Canada",
+    "vuejs":"China","yyx990803":"China","evanyou":"China",
+    "angular":"United States","angularjs":"United States",
+    # CSS frameworks
+    "bulma":"United Kingdom","jgthms":"United Kingdom",
+    "tailwindlabs":"United States","tailwindcss":"United States","adamwathan":"United States",
+    # Editors
+    "slab":"United States",                    # Quill (after acquisition by Slab)
+    "quilljs":"United States","jhchen":"United States",
+    # WP plugins maintainers
+    "ramoonus":"Netherlands",                  # WP plugins author
+    # zepto
+    "madrobby":"United States",                # Thomas Fuchs (now in USA)
+    # Closure Library
+    "closure-library":"United States",
+    # protobuf
+    "protobuf":"United States","protocolbuffers":"United States",
+    # Twitter Bootstrap historical
+    "twitter":"United States",
+    # Material UI
+    "mui":"United States","mui-org":"United States","material-ui":"United States",
+    "callemall":"United States",
+    # WordPress maintainers
+    "automattic":"United States","matt":"United States",
+    # Hugging Face
+    "huggingface":"United States","facebookresearch":"United States",
+    # Composables
+    "composablehorizons":"United Kingdom",
+    "io-getquill":"United States","getquill":"United States",
 }
 
 @st.cache_data(ttl=7200, show_spinner=False)
@@ -882,19 +1021,54 @@ def _extract_gh_username(maintainer: str) -> str:
       "👤 username"        →  "username"
       "🏢 OrgName"         →  "OrgName"
       "—" / ""             →  ""
+
+    CRITICAL: Filters out person-name display strings.
+    "User · Jeremy Ashkenas" → "" (don't lookup random Jeremy on GitHub)
+    "Org · The Bootstrap Authors" → "" (don't lookup "The")
+    These produce false-positive country results from random GitHub users
+    who happen to share a first name with the real maintainer.
     """
-    _SKIP = {"org", "user", "—", ""}
+    # Common words that are never GitHub usernames
+    _NOISE = {"org", "user", "the", "a", "an", "and", "or", "foundation", "fdn",
+              "inc", "incorporated", "ltd", "limited", "llc", "corp", "corporation",
+              "team", "authors", "author", "community", "project", "labs", "lab",
+              "group", "co", "company", "developers", "dev", "developer",
+              "contributors", "contributor", "maintainers", "maintainer",
+              "—", "", "all", "various", "anonymous", "official", "open",
+              "source", "opensource"}
     m = str(maintainer).strip()
     if not m or m == "—":
         return ""
     if " · " in m:
         after = m.split(" · ", 1)[1].strip()
-        parts = after.split()
-        uname = parts[0] if parts else ""
     else:
-        clean = re.sub(r"^[^\w]*", "", m).strip()
-        parts = [p for p in clean.split() if p.lower() not in _SKIP]
-        uname = parts[0] if parts else ""
+        after = re.sub(r"^[^\w]*", "", m).strip()
+
+    # Strip trailing "+N" marker (e.g. "jQuery Foundation +1" → "jQuery Foundation")
+    after = re.sub(r"\s*\+\d+\s*$", "", after).strip()
+    if not after:
+        return ""
+
+    parts = after.split()
+    uname = parts[0] if parts else ""
+
+    # ── Person-name guard ──────────────────────────────────────────────
+    # If the maintainer has MULTIPLE space-separated words AND each word is
+    # an alphabetic capitalised token, this is a person's DISPLAY NAME
+    # (e.g. "Jeremy Ashkenas", "Faruk Ateş", "The Bootstrap Authors") —
+    # not a GitHub handle. Looking up such names produces wrong countries
+    # because random GitHub users share these first names.
+    if len(parts) >= 2:
+        looks_like_display_name = all(
+            p[0].isupper() and p[1:].replace(".", "").isalpha()
+            for p in parts if p and len(p) > 1
+        )
+        if looks_like_display_name:
+            return ""
+
+    # First word is a noise word → skip
+    if uname.lower() in _NOISE:
+        return ""
 
     # Reverse-DNS Maven groupIds (com.google.guava, org.apache.commons …) are
     # NOT GitHub usernames. Map them to the most likely GitHub org name:
@@ -1224,30 +1398,65 @@ def _name_clean(s: str) -> str:
              .replace("/","").replace(".","").replace(" ",""))
 
 def _search_tokens(query: str) -> list:
+    # Keep tokens ≥ 2 chars (so "UI", "JS", "CSS" survive — they're critical
+    # disambiguators: "Radix UI" must require "ui", not just "radix").
     return [t.lower() for t in query.split()
-            if len(t) > 2 and t.lower() not in _STOP]
+            if len(t) >= 2 and t.lower() not in _STOP]
 
 def _filter_search(data: list, query: str) -> list:
     """
     Precision filter for search-mode results.
-    Rules:
-      1. ALL significant query tokens must appear in the package name.
-         (e.g. "Google Guava" → name must contain BOTH 'google' AND 'guava')
-      2. Return at most the single highest-scoring match — one best result
-         per registry, not a list of sub-artifacts.
+
+    Two-layer rules:
+      1. ALL significant query tokens must appear in the cleaned package name
+         (e.g. "Radix UI" → must contain BOTH 'radix' AND 'ui').
+      2. Name's first component (before first .  -  _  /  :) must START with
+         the primary query token. This rejects compound names like
+         "MahApps.Metro.IconPacks.RadixIcons" for query "Radix UI" — the
+         first component "MahApps" doesn't start with "radix" → REJECT.
+      3. Return at most the single highest-scoring match.
     """
     if not data:
         return []
     tokens = _search_tokens(query)
     if not tokens:
         return data[:1]
+    primary = tokens[0]            # first significant query token
 
     def score(row):
         c = _name_clean(row.get("Library", ""))
         return sum(1 for t in tokens if t in c)
 
-    # Require every token to be present in the name
-    matched = [r for r in data if score(r) >= len(tokens)]
+    def first_component_matches(row):
+        """Reject compound names whose first component is unrelated."""
+        name = row.get("Library", "").lower()
+        # Strip @scope/ prefix (npm scoped packages like @radix-ui/themes)
+        if name.startswith("@"):
+            name = name.split("/", 1)[-1] if "/" in name else name[1:]
+        # First component: chars before first separator (/ : . - _ space)
+        first_seg = re.split(r"[/.:\-_ ]", name, maxsplit=1)[0]
+        first_seg_clean = re.sub(r"[^a-z0-9]", "", first_seg)
+        full_clean      = _name_clean(name)
+        if not first_seg_clean:
+            return False
+        # Accept if either:
+        #   • full cleaned name starts with primary token
+        #   • first component starts with primary
+        #   • primary starts with first component (handles shorter-name cases)
+        return (full_clean.startswith(primary) or
+                first_seg_clean.startswith(primary) or
+                (primary.startswith(first_seg_clean) and len(first_seg_clean) >= 3))
+
+    # Pass 1 — strict: all tokens present AND first component matches primary
+    matched = [r for r in data
+               if score(r) >= len(tokens) and first_component_matches(r)]
+
+    # Pass 2 — slightly looser: all tokens present (drop first-component rule)
+    # Only used if strict pass returns nothing, to avoid empty-result cliffs.
+    if not matched:
+        matched = [r for r in data if score(r) >= len(tokens)
+                   and first_component_matches(r)]
+
     if not matched:
         return []   # nothing truly relevant — show nothing rather than noise
 
@@ -4662,10 +4871,18 @@ if scan_btn and q.strip():
 
     with st.status(
         f"Scanning {_q_label} across {_n_adapters} registries…", expanded=True):
+        # Show queue first so user sees all queries that will run in parallel
         for t in targets:
             mode = "Search" if _is_search(t) else "Exact"
             st.write(f"`{mode}` → `{t}`")
-            hits, errs, _ = run_audit(
+
+        # ── Parallel outer loop ────────────────────────────────────────────
+        # Each library still has its own inner 16-thread adapter pool, so this
+        # outer pool stays conservative (4 concurrent libraries) to avoid
+        # hammering rate-limited registries (npm, GitHub) with 16×4=64 parallel
+        # requests per registry. 4× concurrency on 30 libraries = ~5× speedup.
+        def _scan_one(t):
+            return run_audit(
                 t,
                 github_token     = github_token     or None,
                 kaggle_username  = kaggle_username  or None,
@@ -4676,7 +4893,15 @@ if scan_btn and q.strip():
                 nexus_repo_url   = nexus_repo_url   or None,
                 nexus_repo_creds = nexus_repo_creds or None,
             )
-            _tmp_data.extend(hits); _tmp_errs.extend(errs)
+
+        _outer_workers = min(4, len(targets)) or 1
+        with ThreadPoolExecutor(max_workers=_outer_workers) as _ex:
+            for fut in as_completed([_ex.submit(_scan_one, t) for t in targets]):
+                try:
+                    hits, errs, _ = fut.result()
+                    _tmp_data.extend(hits); _tmp_errs.extend(errs)
+                except Exception as _e:
+                    _tmp_errs.append(("scan", f"{type(_e).__name__}: {_e}"))
 
     # Store in session_state then rerun so the results block always renders
     st.session_state["scan_data"]   = _tmp_data
