@@ -408,12 +408,37 @@ _COUNTRY_NORM: dict[str, str] = {
     "leeds":"United Kingdom","liverpool":"United Kingdom","bristol":"United Kingdom",
     "edinburgh":"United Kingdom","glasgow":"United Kingdom","oxford":"United Kingdom",
     "cambridge":"United Kingdom","sheffield":"United Kingdom","nottingham":"United Kingdom",
-    # United States
+    # United States — country aliases, then states (full names + 2-letter codes
+    # SCOPED with "us" prefix to disambiguate from country codes like "ca"=Canada),
+    # then major cities.
     "us":"United States","usa":"United States","u.s.":"United States","u.s.a.":"United States",
     "united states":"United States","united states of america":"United States",
-    "america":"United States","new york":"United States","san francisco":"United States",
+    "america":"United States",
+    # US states — full names (safe to substring-match)
+    "california":"United States","texas":"United States","florida":"United States",
+    "new york state":"United States","washington state":"United States",
+    "massachusetts":"United States","colorado":"United States","oregon":"United States",
+    "illinois":"United States","pennsylvania":"United States","georgia":"United States",
+    "virginia":"United States","north carolina":"United States","ohio":"United States",
+    "michigan":"United States","minnesota":"United States","arizona":"United States",
+    "tennessee":"United States","indiana":"United States","missouri":"United States",
+    "wisconsin":"United States","maryland":"United States","new jersey":"United States",
+    "connecticut":"United States","utah":"United States","nevada":"United States",
+    "kentucky":"United States","louisiana":"United States","oklahoma":"United States",
+    "arkansas":"United States","mississippi":"United States","kansas":"United States",
+    "iowa":"United States","nebraska":"United States","alabama":"United States",
+    "south carolina":"United States","new mexico":"United States","west virginia":"United States",
+    "hawaii":"United States","alaska":"United States","rhode island":"United States",
+    "delaware":"United States","montana":"United States","wyoming":"United States",
+    "north dakota":"United States","south dakota":"United States","vermont":"United States",
+    "new hampshire":"United States","maine":"United States","idaho":"United States",
+    # Major US cities
+    "new york":"United States","san francisco":"United States",
     "san francisco bay area":"United States","silicon valley":"United States",
     "seattle":"United States","los angeles":"United States","chicago":"United States",
+    "menlo park":"United States","palo alto":"United States","cupertino":"United States",
+    "mountain view":"United States","sunnyvale":"United States","san jose":"United States",
+    "redmond":"United States","irvine":"United States","santa clara":"United States",
     "boston":"United States","austin":"United States","portland":"United States",
     "denver":"United States","atlanta":"United States","dallas":"United States",
     "washington":"United States","dc":"United States","washington dc":"United States",
@@ -654,44 +679,199 @@ def _normalize_country(location: str) -> str:
     #    Only values explicitly listed in _COUNTRY_NORM are shown as country names.
     return "Unknown"
 
+def _username_variants(name: str) -> list:
+    """
+    Generate plausible GitHub username variants for a freeform maintainer name.
+    Tried in order of likelihood:
+      1. Exact (e.g. "google")
+      2. Lowercase (e.g. "Microsoft" → "microsoft")
+      3. No-spaces (e.g. "Mark Finger" → "MarkFinger")
+      4. Hyphenated (e.g. "Mark Finger" → "mark-finger")
+      5. First word only (already the default if no spaces present)
+    Duplicates are removed while preserving order.
+    """
+    if not name:
+        return []
+    seen, out = set(), []
+    candidates = [
+        name,
+        name.lower(),
+        re.sub(r"\s+", "", name),               # "Mark Finger" → "MarkFinger"
+        re.sub(r"\s+", "-", name).lower(),       # "Mark Finger" → "mark-finger"
+        re.sub(r"\s+", "_", name).lower(),       # "Mark Finger" → "mark_finger"
+        name.split()[0] if " " in name else "",  # First word fallback
+    ]
+    for c in candidates:
+        c = re.sub(r"[^a-zA-Z0-9_\-]", "", c.strip())
+        if c and c not in seen and 1 <= len(c) <= 39:  # GitHub username limit
+            seen.add(c)
+            out.append(c)
+    return out
+
+# Curated mapping for well-known orgs whose GitHub profile location is
+# unreliable, missing, or generic ("Worldwide", "Internet"). Many large
+# tech companies leave the field blank because they have multiple offices.
+# Without this map, React's "Org · facebook" lookup would fail to resolve
+# even though Meta is clearly headquartered in California, USA.
+_KNOWN_ORG_COUNTRY: dict[str, str] = {
+    # ─── USA — Big Tech, frameworks, runtimes, popular individual maintainers ───
+    "facebook":"United States","meta":"United States","meta-llama":"United States",
+    "google":"United States","googlecloudplatform":"United States","googleapis":"United States",
+    "googlechrome":"United States","googlechromelabs":"United States",
+    "microsoft":"United States","azure":"United States","azure-sdk":"United States",
+    "dotnet":"United States","aspnet":"United States",
+    "apple":"United States","amazon":"United States","aws":"United States","awslabs":"United States",
+    "netflix":"United States","airbnb":"United States","uber":"United States","lyft":"United States",
+    "twitter":"United States","x":"United States","linkedin":"United States","pinterest":"United States",
+    "github":"United States","gitlab":"United States","atlassian":"United States",
+    "mozilla":"United States","openai":"United States","anthropic":"United States",
+    "reactjs":"United States","vercel":"United States","nextjs":"United States",
+    "nodejs":"United States","npm":"United States","ibm":"United States",
+    "oracle":"United States","salesforce":"United States","slack":"United States",
+    "dropbox":"United States","stripe":"United States","redhat":"United States",
+    "vmware":"United States","tensorflow":"United States","pytorch":"United States",
+    "huggingface":"United States","datadoghq":"United States","palantir":"United States",
+    "elastic":"United States","grafana":"United States","hashicorp":"United States",
+    "docker":"United States","kubernetes":"United States","cncf":"United States",
+    "apache":"United States","apachecn":"United States","django":"United States",
+    "pypa":"United States","python":"United States",
+    "pallets":"United States","jupyter":"United States","jupyterlab":"United States",
+    "rails":"United States","rubygems":"United States","ruby":"United States",
+    "expressjs":"United States","webpack":"United States","babel":"United States",
+    "lodash":"United States","gatsbyjs":"United States","prisma":"United States",
+    "supabase":"United States","mongodb":"United States","postgres":"United States",
+    "postgresql":"United States","redis":"United States","memcached":"United States",
+    "axios":"United States","sindresorhus":"United States","substack":"United States",
+    "tj":"United States","gaearon":"United States","sebmarkbage":"United States",
+    "addyosmani":"United States","feross":"United States","kentcdodds":"United States",
+    "psf":"United States","matplotlib":"United States","numpy":"United States",
+    "scipy":"United States","scikit-learn":"United States","pandas-dev":"United States",
+    "pytest-dev":"United States","sphinx-doc":"United States","tox-dev":"United States",
+    "actions":"United States","github-marketplace":"United States",
+    "boto":"United States","ansible":"United States","mitchellh":"United States",
+    "spf13":"United States","golang":"United States","goreleaser":"United States",
+    "kubernetes-sigs":"United States","prometheus":"United States","grafana-labs":"United States",
+    "argoproj":"United States","istio":"United States","helm":"United States",
+    "fluxcd":"United States","cilium":"United States","traefik":"United States",
+    "envoyproxy":"United States","stedolan":"United States","jqlang":"United States",
+    "google-research":"United States","google-deepmind":"United States",
+    "tldr-pages":"United States","ohmyzsh":"United States","robbyrussell":"United States",
+    "homebrew":"United States","brew":"United States","laradock":"United States",
+    "twbs":"United States","tailwindlabs":"United States","tailwindcss":"United States",
+    "shadcn":"United States","shadcn-ui":"United States",
+    "nestjs":"United States","kamilmysliwiec":"United States",
+    "remix-run":"United States","kentcdodds":"United States","jaredpalmer":"United States",
+    "formidablelabs":"United States","reduxjs":"United States","reactstrap":"United States",
+    "storybookjs":"United States","cypress-io":"United States","jest-community":"United States",
+    "facebookresearch":"United States","facebookincubator":"United States",
+    # ─── UK ───
+    "canonical":"United Kingdom","arm":"United Kingdom","deepmind":"United Kingdom",
+    "preactjs":"United Kingdom","developit":"United Kingdom",
+    "ubuntu":"United Kingdom","raspberrypi":"United Kingdom",
+    # ─── France ───
+    "ocaml":"France","ocaml-community":"France","mirage":"France",
+    "ovh":"France","scaleway":"France","gitlabhq":"France","dailymotion":"France",
+    # ─── Germany ───
+    "sap":"Germany","saphanaone":"Germany","contao":"Germany",
+    "matomo-org":"Germany","piwik":"Germany","typo3":"Germany",
+    # ─── Czech Republic ───
+    "jetbrains":"Czech Republic","kotlin":"Czech Republic","jetbrains-research":"Czech Republic",
+    # ─── Sweden ───
+    "spotify":"Sweden","klarna":"Sweden","mojang":"Sweden","minecraft":"Sweden",
+    "minecrafter":"Sweden",
+    # ─── Norway ───
+    "opera":"Norway","operasoftware":"Norway",
+    # ─── Netherlands ───
+    "tomtom":"Netherlands","booking":"Netherlands","elastic":"Netherlands",
+    "adyen":"Netherlands","mollie":"Netherlands",
+    # ─── Russia / former USSR ───
+    "nginx":"Russia","yandex":"Russia","kaspersky":"Russia","mailru":"Russia",
+    "tarantool":"Russia","clickhouse":"Russia",
+    # ─── China ───
+    "alibaba":"China","alibabacloud":"China","tencent":"China","baidu":"China",
+    "bytedance":"China","huawei":"China","huaweicloud":"China","didi":"China",
+    "antdesign":"China","ant-design":"China","element-plus":"China","vuejs":"China",
+    "vuetifyjs":"China","quasarframework":"China","element":"China",
+    # ─── India ───
+    "redhuntlabs":"India","tcs":"India","infosys":"India","wipro":"India",
+    "freshworks":"India","zoho":"India","flipkart":"India","ola":"India",
+    "myntra":"India","paytm":"India","razorpay":"India","swiggy":"India",
+    # ─── Japan ───
+    "lineage":"Japan","mercari":"Japan","sony":"Japan","sonyplaystation":"Japan",
+    "rakuten":"Japan","rubykaigi":"Japan","cookpad":"Japan","line":"Japan",
+    # ─── South Korea ───
+    "kakao":"South Korea","navercorp":"South Korea","samsung":"South Korea",
+    "lge":"South Korea",
+    # ─── Australia ───
+    "atlassian":"Australia","canva":"Australia","camjackson":"Australia",
+    "envato":"Australia","abc":"Australia",
+    # ─── Canada ───
+    "shopify":"Canada","slack":"Canada","hootsuite":"Canada","blackberry":"Canada",
+    # ─── Switzerland ───
+    "google-deepmind":"Switzerland","cern":"Switzerland","openzeppelin":"Switzerland",
+    # ─── Finland ───
+    "nokia":"Finland","supercell":"Finland","linus":"Finland","linuxfoundation":"Finland",
+    # ─── Spain ───
+    "telefonica":"Spain","glovo":"Spain",
+    # ─── Italy ───
+    "ferrari":"Italy","luigi":"Italy",
+}
+
 @st.cache_data(ttl=7200, show_spinner=False)
 def _fetch_github_country(username: str, token: str = "") -> str:
     """
     Return the normalised country for a GitHub username.
 
-    Cache hierarchy (no token required):
-      1. Streamlit in-memory cache  — 2-hour TTL  (fastest, per session)
-      2. SQLite persistent cache    — 24-hour TTL (survives restarts)
-      3. GitHub API call            — only when both caches miss
+    Tries multiple username variants because registry maintainer fields don't
+    always exactly match GitHub usernames (e.g. "Mark Finger" → try
+    MarkFinger, mark-finger, mark, etc. — first that returns HTTP 200 wins).
 
-    Without a token: 60 req/hour limit. With the SQLite layer, repeat scans
-    cost 0 API calls — the same username is never fetched twice per day.
+    Cache hierarchy:
+      0. Curated known-orgs map  — overrides for big tech with unreliable profiles
+      1. SQLite persistent cache — 24-hour TTL (survives restarts)
+      2. GitHub API call         — last resort, tries multiple variants
     """
     if not username or username in ("—", ""):
         return "Unknown"
 
-    # 1. SQLite persistent cache
+    # 0. Known-org override — protects against unreliable GitHub profile data.
+    #    Example: github.com/facebook has empty location → API says "Unknown",
+    #    but Meta is clearly USA-based.  Without this, React shows "Unknown".
+    if username.lower() in _KNOWN_ORG_COUNTRY:
+        return _KNOWN_ORG_COUNTRY[username.lower()]
+
+    # 1. SQLite persistent cache (keyed on original input — variants share key)
     cached = _country_cache_get(username)
     if cached is not None:
         return cached
 
-    # 2. GitHub API
+    # 2. GitHub API — try variants until one returns 200
     headers = {"User-Agent": "RegistryIntelligencePlatform/1.0",
                "Accept":     "application/vnd.github+json"}
     if token:
         headers["Authorization"] = f"Bearer {token}"
-    try:
-        r = requests.get(f"https://api.github.com/users/{username}",
-                         headers=headers, timeout=TIMEOUT)
-        if r.status_code == 200:
-            loc     = r.json().get("location") or ""
-            country = _normalize_country(loc)
-            _country_cache_set(username, country)   # persist for 24 h
-            return country
-        if r.status_code in (403, 429):
-            return "⚠️ Rate Limited"   # do NOT cache — retry after rate limit resets
-    except Exception:
-        pass
+
+    rate_limited = False
+    for variant in _username_variants(username):
+        try:
+            r = requests.get(f"https://api.github.com/users/{variant}",
+                             headers=headers, timeout=TIMEOUT)
+            if r.status_code == 200:
+                loc     = r.json().get("location") or ""
+                country = _normalize_country(loc)
+                _country_cache_set(username, country)   # persist for 24 h
+                return country
+            if r.status_code in (403, 429):
+                rate_limited = True
+                break          # don't keep hitting a rate-limited API
+            # 404 means this variant doesn't exist — try the next one
+        except Exception:
+            continue
+
+    if rate_limited:
+        return "⚠️ Rate Limited"   # do NOT cache — retry when limit resets
+    # All variants returned 404 → genuinely no GitHub user for this maintainer
+    _country_cache_set(username, "Unknown")
     return "Unknown"
 
 def _extract_gh_username(maintainer: str) -> str:
@@ -753,22 +933,90 @@ def _enrich_countries(df, github_token: str = "") -> "pd.DataFrame":
     Cache hierarchy per username:
       SQLite (24 h) → Streamlit memory (2 h) → GitHub API
     """
-    # Extract usernames for every row
-    usernames = [_extract_gh_username(row.get("Maintainer", "") or "")
-                 for _, row in df.iterrows()]
-
-    # Deduplicate — fetch each unique username only once
-    unique = {u for u in usernames if u}
-    country_map: dict[str, str] = {}
-    for u in unique:
-        country_map[u] = _fetch_github_country(u, github_token)
-
-    countries = [country_map.get(u, "Unknown") if u else "Unknown"
-                 for u in usernames]
+    # ── Unified per-row country resolver — guarantees a non-empty result ──
+    # Tries every available signal before giving up. Order:
+    #   1. Curated org-map (handled inside _fetch_github_country)
+    #   2. Adapter's extracted _gh_owner (from upstream source repo URL)
+    #   3. Username variants from Maintainer field
+    #   4. GitHub repo-search by package name (top-starred match)
+    # Final result is NEVER blank — always either a country name or "Unknown".
+    countries = []
+    for _, row in df.iterrows():
+        country = _resolve_country_for_row(row, github_token)
+        countries.append(country or "Unknown")
 
     df = df.copy()
     df.insert(df.columns.get_loc("Maintainer") + 1, "Country", countries)
     return df
+
+def _resolve_country_for_row(row, github_token: str = "") -> str:
+    """
+    Single-source country resolver for one results row.
+    Guarantees a non-empty return value.
+    """
+    pkg_name = row.get("Library", "") or ""
+
+    # Layer 1+2: try the adapter-extracted _gh_owner first
+    gh_owner = (row.get("_gh_owner") or "").strip()
+    if gh_owner:
+        c = _fetch_github_country(gh_owner, github_token)
+        if c not in ("Unknown", "⚠️ Rate Limited", ""):
+            return c
+
+    # Layer 3: fall back to extracted username from Maintainer text
+    uname = _extract_gh_username(row.get("Maintainer", "") or "")
+    if uname:
+        c = _fetch_github_country(uname, github_token)
+        if c not in ("Unknown", "⚠️ Rate Limited", ""):
+            return c
+
+    # Layer 4: search GitHub for the package and use top repo's owner
+    if pkg_name and len(pkg_name) >= 3:
+        c = _country_via_repo_search(pkg_name, github_token)
+        if c not in ("Unknown", "⚠️ Rate Limited", ""):
+            return c
+
+    return "Unknown"
+
+@st.cache_data(ttl=7200, show_spinner=False)
+def _country_via_repo_search(pkg_name: str, token: str = "") -> str:
+    """
+    Last-resort country lookup: search GitHub for repos named like the package,
+    take the top-starred result's owner, and look up THEIR country.
+
+    Works WITHOUT a token (lower rate limits but still functional).
+    Most popular packages have a canonical upstream GitHub repo — if "react"
+    returns facebook/react as the top hit, that's the right project.
+    """
+    if not pkg_name or len(pkg_name) < 3:
+        return "Unknown"
+    headers = {"User-Agent": "RegistryIntelligencePlatform/1.0",
+               "Accept":     "application/vnd.github+json"}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    try:
+        r = requests.get(
+            f"https://api.github.com/search/repositories"
+            f"?q={requests.utils.quote(pkg_name)}+in:name"
+            f"&sort=stars&per_page=5",
+            headers=headers, timeout=8)
+        if r.status_code != 200:
+            return "Unknown"
+        for item in r.json().get("items", []):
+            # Filter: only accept high-confidence name matches to avoid
+            # picking unrelated repos (e.g., "react" should match "react"
+            # not "react-native-some-tiny-pkg")
+            repo_name = (item.get("name", "") or "").lower()
+            if repo_name != pkg_name.lower() and pkg_name.lower() not in repo_name:
+                continue
+            owner = (item.get("owner") or {}).get("login", "")
+            if owner:
+                country = _fetch_github_country(owner, token)
+                if country not in ("Unknown", "⚠️ Rate Limited"):
+                    return country
+    except Exception:
+        pass
+    return "Unknown"
 
 def _flag(country: str) -> str:
     """Return a Unicode flag emoji for common countries."""
@@ -1417,8 +1665,32 @@ class BaseAdapter:
     def fetch(self, pkg, **kw): raise NotImplementedError
     def search(self, q, **kw): return []
 
+def _gh_owner_from_url(url) -> str:
+    """
+    Extract the GitHub owner (org/user) from a repository URL.
+      "git+https://github.com/facebook/react.git" → "facebook"
+      "https://github.com/axios/axios"            → "axios"
+      "https://gitlab.com/foo/bar"                → ""   (not GitHub)
+    Used for country lookup so we resolve the REAL upstream org, not the
+    registry's publishing-account name (npm "fb" → wrong → Germany).
+    """
+    if not url:
+        return ""
+    if isinstance(url, dict):
+        url = url.get("url") or ""
+    url = str(url).strip()
+    m = re.search(r"github\.com[/:]([\w\-\.]+)/", url, flags=re.IGNORECASE)
+    return m.group(1) if m else ""
+
 def _row(lib, reg, ver="N/A", desc="—", lic="—", dl=0,
-         maintainer="—", cves="—", repo="N/A", last_updated="—"):
+         maintainer="—", cves="—", repo="N/A", last_updated="—",
+         gh_owner=""):
+    """
+    `gh_owner` is the GitHub org/user from the upstream source repo (e.g.
+    "facebook" for React on npm). Used internally for country lookup so we
+    look up the REAL maintainer's location, not a registry-specific bot account.
+    Dropped from the displayed dataframe — never shown to the user.
+    """
     return {
         "Library":      lib,
         "Registry":     reg,
@@ -1433,7 +1705,8 @@ def _row(lib, reg, ver="N/A", desc="—", lic="—", dl=0,
         # converts git:// → https://, removes .git suffix, ensures https://
         # This guarantees every Source button gets a clickable, working link.
         "Repo":         _clean_repo_url(repo),
-        "_dl_raw":      int(dl) if dl else 0,   # internal sort key, dropped before display
+        "_dl_raw":      int(dl) if dl else 0,
+        "_gh_owner":    gh_owner or "",          # hidden: used by country lookup
     }
 
 # ── GitHub profile helpers ────────────────────────────────────────────────────
@@ -2223,11 +2496,19 @@ class PyPIAdapter(BaseAdapter):
         name = d.get("maintainer") or d.get("author") or "—"
         m    = _m_auto(name)
         c    = check_vuln(pkg, "PyPI")
+        # Extract the REAL GitHub org from project_urls for country lookup
+        _gh = ""
+        for v_ in (d.get("project_urls") or {}).values():
+            _gh = _gh_owner_from_url(v_)
+            if _gh: break
+        if not _gh:
+            _gh = _gh_owner_from_url(d.get("home_page", ""))
         return _row(pkg, "PyPI", v, d.get("summary",""),
                     self._pypi_license(d),
                     dl, m, c,
                     self._pypi_source_url(d, pkg),
-                    last_updated=last_updated)
+                    last_updated=last_updated,
+                    gh_owner=_gh)
 
     def search(self, q, **kw):
         slug = q.strip().replace(" ","-").lower()
@@ -2324,11 +2605,14 @@ class NPMAdapter(BaseAdapter):
 
         m = self._npm_maintainer(pkg, d)
         c = check_vuln(pkg,"npm")
-        # Source button → always the npm page for this package
+        # Source button → always the npm page for this package.
+        # Country lookup → use the REAL GitHub org from the repo URL,
+        # not the npm publish-account name (e.g. "fb" → "facebook").
         return _row(pkg, "NPM", v, d.get("description",""), d.get("license",""),
                     dl, m, c,
                     f"https://www.npmjs.com/package/{pkg}",
-                    last_updated=last_updated)
+                    last_updated=last_updated,
+                    gh_owner=_gh_owner_from_url(repo))
 
     def search(self, q, **kw):
         r = requests.get(
@@ -2372,13 +2656,17 @@ class RubyGemsAdapter(BaseAdapter):
         m    = _m_auto(authors)
         c    = check_vuln(pkg.lower(),"RubyGems")
         last_updated = d.get("version_created_at","") or d.get("created_at","") or "—"
+        # Country lookup → real GitHub org from source_code_uri / homepage
+        _gh = (_gh_owner_from_url(d.get("source_code_uri","")) or
+               _gh_owner_from_url(d.get("homepage_uri","")))
         # Source button → always the RubyGems page for this gem
         return _row(pkg.lower(), "RubyGems", d.get("version","N/A"),
                     d.get("info",""),
                     ", ".join(d.get("licenses") or []) if d.get("licenses") else "—",
                     d.get("downloads",0), m, c,
                     f"https://rubygems.org/gems/{pkg.lower()}",
-                    last_updated=last_updated)
+                    last_updated=last_updated,
+                    gh_owner=_gh)
 
     def search(self, q, **kw):
         r = requests.get(
@@ -2435,13 +2723,16 @@ class CratesAdapter(BaseAdapter):
         except: pass
         c            = check_vuln(pkg,"crates.io")
         last_updated = cr.get("updated_at","") or "—"
-
+        # Country lookup → real GitHub org from repository / homepage
+        _gh = (_gh_owner_from_url(cr.get("repository","")) or
+               _gh_owner_from_url(cr.get("homepage","")))
         # Source button → always the crates.io page for this crate
         return _row(pkg, "Crates.io", v,
                     cr.get("description",""), lic,
                     cr.get("downloads",0), m, c,
                     f"https://crates.io/crates/{pkg}",
-                    last_updated=last_updated)
+                    last_updated=last_updated,
+                    gh_owner=_gh)
 
     def search(self, q, **kw):
         r = requests.get(
@@ -2489,13 +2780,16 @@ class PackagistAdapter(BaseAdapter):
         if stables and stables[0] in all_ver:
             last_updated = all_ver[stables[0]].get("time","") or "—"
         c = check_vuln(full,"Packagist")
+        # Country lookup → real GitHub org from repository URL
+        _gh = _gh_owner_from_url(pk.get("repository",""))
         # Library shows just the package name (clean). Vendor stays in Maintainer.
         # Source button → always the Packagist page for this package
         pkg_name = full.split("/")[-1] if "/" in full else full
         return _row(pkg_name, "Packagist", v,
                     pk.get("description",""), lic, dl, m, c,
                     f"https://packagist.org/packages/{full}",
-                    last_updated=last_updated)
+                    last_updated=last_updated,
+                    gh_owner=_gh)
 
     def search(self, q, **kw):
         r = requests.get(
@@ -2639,6 +2933,7 @@ class MavenAdapter(BaseAdapter):
         # e.g. com.google.guava:guava → Solr says 33.4.8-jre (Apr 2025),
         #      metadata.xml says 33.6.0-jre with lastUpdated of today
         latest_ver = d.get("latestVersion", "N/A")
+        gh_owner   = ""   # for country lookup — extracted from POM <scm>
         try:
             g_path = g.replace(".", "/")
             meta_r = requests.get(
@@ -2662,12 +2957,41 @@ class MavenAdapter(BaseAdapter):
         except Exception:
             pass
 
+        # Fetch the POM file — it contains <scm><url> pointing to the upstream
+        # GitHub repo. For wrapper packages like org.webjars.npm:react this
+        # gives us the REAL upstream (facebook/react → USA), not the wrapper org.
+        try:
+            g_path = g.replace(".", "/")
+            pom_r = requests.get(
+                f"https://repo1.maven.org/maven2/{g_path}/{a_id}/{latest_ver}/"
+                f"{a_id}-{latest_ver}.pom",
+                timeout=8
+            )
+            if pom_r.status_code == 200:
+                pom = pom_r.text
+                # <scm><url>...</url></scm> OR <scm><connection>...</connection>
+                for tag in ("url", "connection", "developerConnection"):
+                    for m_scm in re.finditer(
+                            rf"<scm>.*?<{tag}>([^<]+)</{tag}>", pom, flags=re.DOTALL):
+                        owner = _gh_owner_from_url(m_scm.group(1))
+                        if owner:
+                            gh_owner = owner
+                            break
+                    if gh_owner:
+                        break
+                # Fallback: scan the whole POM for any github.com URL
+                if not gh_owner:
+                    gh_owner = _gh_owner_from_url(pom)
+        except Exception:
+            pass
+
         # Library column shows just the artifact name (clean) — full coordinates
         # are still preserved in Maintainer ("Org · {g}") and Description ("{g} · {a}")
         return _row(a_id, "Maven Central", latest_ver,
                     desc, "Apache-2.0", 0, m, c,
                     f"https://mvnrepository.com/artifact/{g}/{a_id}",
-                    last_updated=last_updated)
+                    last_updated=last_updated,
+                    gh_owner=gh_owner)
 
     def search(self, q, **kw):
         r = requests.get(
@@ -2751,12 +3075,15 @@ class NuGetAdapter(BaseAdapter):
         ver          = d.get("version", "N/A")
         # Search API returns published=null — use the Registration API instead
         last_updated = d.get("published") or self._nuget_published_date(pid, ver)
+        # Country lookup → real GitHub org from projectUrl
+        _gh = _gh_owner_from_url(d.get("projectUrl",""))
         # Source button → always the NuGet page for this package
         return _row(pid, "NuGet", d.get("version","N/A"),
                     d.get("description",""), lic,
                     d.get("totalDownloads",0), m, c,
                     f"https://www.nuget.org/packages/{pid}",
-                    last_updated=last_updated)
+                    last_updated=last_updated,
+                    gh_owner=_gh)
 
     def search(self, q, **kw):
         r = requests.get(
@@ -2797,9 +3124,13 @@ class GoModulesAdapter(BaseAdapter):
         owner = parts[1] if len(parts) >= 2 else "—"
         m     = _m_user(owner)
         c     = check_vuln(pkg,"Go")
+        # For Go modules with path "github.com/owner/repo", owner is the real
+        # GitHub org → ideal for country lookup
+        _gh = owner if (len(parts) >= 3 and parts[0].lower() == "github.com") else ""
         return _row(pkg, "Go Modules", v, "—", lic, 0, m, c,
                     f"https://pkg.go.dev/{pkg}",
-                    last_updated=last_updated)
+                    last_updated=last_updated,
+                    gh_owner=_gh)
 
 
 class HomebrewAdapter(BaseAdapter):
@@ -2875,12 +3206,14 @@ class DockerHubAdapter(BaseAdapter):
         else:
             m = _m_org(ns)
         last_updated = d.get("last_updated","") or "—"
+        # Docker Hub namespace often matches GitHub org (nginx, redis, mysql)
         # Library shows just the image name; namespace stays in Maintainer
         return _row(nm, "Docker Hub", ver_label,
                     _trunc(d.get("full_description") or d.get("description",""),72),
                     "—", d.get("pull_count",0), m, "—",
                     f"https://hub.docker.com/r/{ns}/{nm}",
-                    last_updated=last_updated)
+                    last_updated=last_updated,
+                    gh_owner=ns if ns != "library" else nm)
 
     def search(self, q, **kw):
         r = requests.get(
@@ -2915,10 +3248,12 @@ class HuggingFaceAdapter(BaseAdapter):
             m        = _m_org(author) if "/" in mid else _m_user(author)
             lm       = d.get("lastModified","") or "—"
             model_name = mid.split("/")[-1] if "/" in mid else mid
+            # HF org name often matches a GitHub org (microsoft, google, openai)
             return _row(model_name, "Hugging Face", lm[:10],
                         desc, lic, d.get("downloads",0), m, "—",
                         f"https://huggingface.co/{mid}",
-                        last_updated=lm)
+                        last_updated=lm,
+                        gh_owner=author)
         r2 = requests.get(
             f"https://huggingface.co/api/models?search={pkg}&limit=1&sort=downloads",
             timeout=TIMEOUT)
@@ -2936,7 +3271,8 @@ class HuggingFaceAdapter(BaseAdapter):
                 return _row(model_name, "Hugging Face", lm[:10],
                             desc, "—", d.get("downloads",0), m, "—",
                             f"https://huggingface.co/{mid}",
-                            last_updated=lm)
+                            last_updated=lm,
+                            gh_owner=author)
         return None
 
     def search(self, q, **kw):
@@ -3012,7 +3348,8 @@ class TerraformAdapter(BaseAdapter):
                     mo.get("description","—"), "MPL-2.0",
                     mo.get("downloads",0), _m_org(namespace), "—",
                     f"https://registry.terraform.io/modules/{mo.get('id','')}",
-                    last_updated=mo.get("published_at","") or "—")
+                    last_updated=mo.get("published_at","") or "—",
+                    gh_owner=namespace)
 
     def search(self, q, **kw):
         r = requests.get(
@@ -3048,7 +3385,8 @@ class AnsibleGalaxyAdapter(BaseAdapter):
                     d.get("download_count",0),
                     _m_user(ns), "—",
                     f"https://galaxy.ansible.com/{ns}/{d.get('name','')}",
-                    last_updated=d.get("modified","") or "—")
+                    last_updated=d.get("modified","") or "—",
+                    gh_owner=ns)
 
     def search(self, q, **kw):
         r = requests.get(
@@ -3184,11 +3522,13 @@ class GHCRAdapter(BaseAdapter):
                 lu = (versions_data[0].get("updated_at") or
                       versions_data[0].get("created_at") or "—") if versions_data else "—"
                 m = _m_org(owner) if ent == "orgs" else _m_user(owner)
-                # Library shows just the image name; owner stays in Maintainer
+                # Library shows just the image name; owner stays in Maintainer.
+                # GHCR owner is already a GitHub org/user — perfect for country.
                 return _row(p, "GHCR", v,
                             "GitHub Container Registry", "—", 0, m, "—",
                             f"https://ghcr.io/{pkg}",
-                            last_updated=lu)
+                            last_updated=lu,
+                            gh_owner=owner)
         return None
 
 
@@ -4374,10 +4714,13 @@ if "scan_data" in st.session_state:
             df.rename(columns={"Status": "Maintainer"}, inplace=True)
         _COLS = ["Library","Registry","Version","Maintainer",
                  "CVEs","License","Downloads","Last Updated","Description","Repo"]
+        # Hidden columns kept on df for internal use (country lookup) but
+        # never displayed. Must be preserved through the column-subset step.
+        _HIDDEN_COLS = ["_gh_owner"]
         for _c in _COLS:
             if _c not in df.columns:
                 df[_c] = "—"
-        df = df[_COLS]
+        df = df[_COLS + [c for c in _HIDDEN_COLS if c in df.columns]]
 
         total = len(df)
         regs  = df["Registry"].nunique()
@@ -4442,8 +4785,13 @@ if "scan_data" in st.session_state:
                 unsafe_allow_html=True)
 
             # ── Abandoned Package Detection ───────────────────────────────
-            # Add Status column based on Last Updated date
+            # Add Status column based on Last Updated date.
+            # Drop internal-only columns from the display copy (they stay on
+            # `df` so country enrichment can still use _gh_owner).
             disp_df = df.copy()
+            for _hidden in ("_gh_owner",):
+                if _hidden in disp_df.columns:
+                    disp_df = disp_df.drop(columns=[_hidden])
             disp_df.insert(
                 disp_df.columns.get_loc("Last Updated"),
                 "Status",
