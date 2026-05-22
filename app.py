@@ -335,42 +335,60 @@ def _is_search(q): return " " in q.strip()
 def _name_match(query: str, result_name: str, threshold: float = 0.55) -> bool:
     """Return True if result_name is a plausible match for the user's query.
 
-    Used to filter false positives from search-based adapters that always
-    return *something* even when the package doesn't exist (e.g. Winget
-    returning 'Dax Studio' for query 'suside').
+    Security-researcher rules — NO fuzzy matching, NO arbitrary substring
+    matching. This was the source of false positives like:
+      query "react"  → matched "Win11React"   (substring at end — REJECT)
+      query "axios"  → matched "Microsoft.Axios.Foo"  (substring in middle — REJECT)
 
-    Rules (short-circuit in order):
-      1. Exact case-insensitive match            → always accept
-      2. One string fully contains the other     → accept
-      3. Strip punctuation/spaces and re-check   → accept if equal
-      4. SequenceMatcher ratio >= threshold      → accept
-      5. Otherwise                               → reject
+    Accept ONLY when:
+      1. Exact (case/punctuation insensitive) match
+      2. Path-style suffix match: query == name.split('/:.')[ -1 ]
+      3. Name starts with query (e.g. "react" → "react-dom", "reactjs")
+      4. First word of name (CamelCase-aware) starts with query
+         e.g. "node" → "Node.js"      ✓ first token "Node" starts with "node"
+              "react" → "Win11React"  ✗ first token "Win11" doesn't
     """
-    from difflib import SequenceMatcher
     q = query.lower().strip()
     n = result_name.lower().strip()
     if not q or not n:
         return False
-    # Rule 1 — exact
+
+    # Rule 1 — exact (case-insensitive)
     if q == n:
         return True
-    # Handle path-style names  (e.g.  "org/pkg"  or  "group:artifact")
+
+    # Rule 2 — path-style suffix: "Mozilla.Firefox" matches "firefox"
     for sep in ("/", ":", "."):
         if sep in n and n.split(sep)[-1] == q:
             return True
         if sep in q and q.split(sep)[-1] == n:
             return True
-    # Rule 2 — containment (handles "next" ↔ "next.js", "flask" ↔ "Flask-Login")
-    if q in n or n in q:
-        return True
-    # Rule 3 — strip non-alphanumeric
+
+    # Rule 3 — strip non-alphanumeric, compare again
     qa = re.sub(r"[^a-z0-9]", "", q)
     na = re.sub(r"[^a-z0-9]", "", n)
-    if qa and na and (qa == na or qa in na or na in qa):
+    if not qa or not na:
+        return False
+    if qa == na:
         return True
-    # Rule 4 — fuzzy similarity
-    ratio = SequenceMatcher(None, q, n).ratio()
-    return ratio >= threshold
+
+    # Rule 4 — prefix match only (NEVER arbitrary substring/suffix)
+    # Both sides must be ≥ 4 chars to avoid noise from short tokens like "ng".
+    if len(qa) >= 4 and len(na) >= 4:
+        if na.startswith(qa) or qa.startswith(na):
+            return True
+
+    # Rule 5 — first-token (CamelCase-aware) starts with query
+    # "Node.js"   → first token "Node"   → starts with "node"  ✓
+    # "Win11React"→ first token "Win11"  → starts with "win11" ✗ (good)
+    # "react-dom" → first token "react"  → starts with "react" ✓
+    first_token = re.split(r'[\s\-_.:/]|(?<=[a-z0-9])(?=[A-Z])',
+                           result_name.strip())[0]
+    ft = re.sub(r"[^a-z0-9]", "", first_token.lower())
+    if ft and len(qa) >= 4 and (ft == qa or ft.startswith(qa) or qa.startswith(ft)):
+        return True
+
+    return False
 
 def _trunc(s, n=72):
     if not s or s == "N/A": return "—"
@@ -3181,6 +3199,30 @@ class WingetAdapter(BaseAdapter):
         if re.sub(r"[^a-z0-9.]", "", query.lower()) == pid:
             return 1.0
 
+        # ── DISPLAY NAME GATE ────────────────────────────────────────────────
+        # Reject results where the display name doesn't start with the query.
+        # Example: query "react" vs name "Win11React" — name doesn't START
+        # with "react" (it starts with "Win11"), so this is NOT the package
+        # the user wants. The id_suffix may equal "react" but Win11React is
+        # a Windows skin, not the React framework.
+        #
+        # Vendor.Product names like "Mozilla Firefox" / "Microsoft Edge" are
+        # still discoverable via the publisher.id route (typing "Mozilla.Firefox"
+        # or "Firefox" alone — Firefox matches as the display name itself).
+        name_orig = latest.get("Name") or raw.get("Name") or pid
+        # First word of the display name (split on whitespace/punctuation/CamelCase)
+        first_token = re.split(r'[\s\-_.:]|(?<=[a-z0-9])(?=[A-Z])', name_orig.strip())[0]
+        first_token_s = re.sub(r"[^a-z0-9]", "", first_token.lower())
+        name_s = re.sub(r"[^a-z0-9]", "", name)
+        # Accept only if the display name (or its first token) STARTS with the query
+        if name_s and name_s != q and not name_s.startswith(q):
+            # Fall back to first-token check: "Firefox" in "Mozilla Firefox"
+            # would be caught later via id_suffix — but here we ensure the
+            # leading word is at least the query itself.
+            if first_token_s != q and not first_token_s.startswith(q):
+                # Reject — name has unrelated text before the query word
+                return 0.0
+
         for surface in [name, pid, id_suffix]:
             s = re.sub(r"[^a-z0-9]", "", surface)
             if not s:
@@ -3188,10 +3230,13 @@ class WingetAdapter(BaseAdapter):
             # Rule 1 — exact match (case-insensitive, punctuation-stripped)
             if q == s:
                 return 1.0
-            # Rule 2 — containment, but ONLY when BOTH sides are ≥ 4 chars.
-            #           Short tokens (e.g. "ng", "ui") are far too ambiguous.
+            # Rule 2 — PREFIX or SUFFIX match (not arbitrary substring).
+            # This catches "react" matching "react-dom" / "reactjs" but
+            # blocks "react" matching "Win11React".
+            # Both sides must be ≥ 4 chars to avoid noise from short tokens.
             if len(q) >= 4 and len(s) >= 4:
-                if q in s or s in q:
+                if q == s or s.startswith(q) or s.endswith(q) or \
+                   q.startswith(s) or q.endswith(s):
                     return 0.92
         # No deterministic rule matched → unknown → return 0 (safe default)
         return 0.0
