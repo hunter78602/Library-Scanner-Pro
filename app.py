@@ -715,6 +715,31 @@ def _extract_gh_username(maintainer: str) -> str:
         clean = re.sub(r"^[^\w]*", "", m).strip()
         parts = [p for p in clean.split() if p.lower() not in _SKIP]
         uname = parts[0] if parts else ""
+
+    # Reverse-DNS Maven groupIds (com.google.guava, org.apache.commons …) are
+    # NOT GitHub usernames. Map them to the most likely GitHub org name:
+    # the SECOND segment after the TLD prefix.
+    #   com.google.guava       → "google"
+    #   org.apache.commons     → "apache"
+    #   io.netty.client        → "netty"
+    #   org.springframework.*  → "spring-projects"  (well-known mapping)
+    if "." in uname and any(uname.lower().startswith(p) for p in (
+            "com.", "org.", "io.", "net.", "edu.", "gov.", "co.", "uk.",
+            "dev.", "app.", "me.", "ai.")):
+        segs = uname.split(".")
+        if len(segs) >= 2 and segs[1]:
+            # Known mappings (when the segment != GitHub org name)
+            _MAPS = {
+                "springframework": "spring-projects",
+                "fasterxml":       "FasterXML",
+                "jboss":           "jbossorg",
+                "eclipse":         "eclipse",
+                "googlecode":      "google",
+                "sun":             "openjdk",
+            }
+            second = segs[1].lower()
+            uname = _MAPS.get(second, segs[1])
+
     return re.sub(r"[^a-zA-Z0-9\-]", "", uname)
 
 def _enrich_countries(df, github_token: str = "") -> "pd.DataFrame":
@@ -2607,10 +2632,12 @@ class MavenAdapter(BaseAdapter):
         last_updated = (datetime.datetime.utcfromtimestamp(ts / 1000).strftime("%Y-%m-%d")
                         if ts else "—")
 
-        # The Solr Search API's `latestVersion` is GENUINELY STALE — it doesn't
-        # index newer releases. The authoritative source is Maven Central's
-        # own maven-metadata.xml file, which always reflects the actual repo state.
-        # e.g. org.webjars.npm:axios — Solr says 1.10.0, metadata.xml says 1.16.1
+        # The Solr Search API's `latestVersion` AND `timestamp` are GENUINELY
+        # STALE — Solr doesn't re-index when new versions are released. The
+        # authoritative source is Maven Central's own maven-metadata.xml file,
+        # which always reflects the actual repo state.
+        # e.g. com.google.guava:guava → Solr says 33.4.8-jre (Apr 2025),
+        #      metadata.xml says 33.6.0-jre with lastUpdated of today
         latest_ver = d.get("latestVersion", "N/A")
         try:
             g_path = g.replace(".", "/")
@@ -2619,13 +2646,19 @@ class MavenAdapter(BaseAdapter):
                 timeout=TIMEOUT
             )
             if meta_r.status_code == 200:
+                txt = meta_r.text
                 # Prefer <release> (stable), fall back to <latest>
-                m_rel = re.search(r"<release>([^<]+)</release>", meta_r.text)
-                m_lat = re.search(r"<latest>([^<]+)</latest>",   meta_r.text)
+                m_rel = re.search(r"<release>([^<]+)</release>", txt)
+                m_lat = re.search(r"<latest>([^<]+)</latest>",   txt)
                 if m_rel:
                     latest_ver = m_rel.group(1).strip()
                 elif m_lat:
                     latest_ver = m_lat.group(1).strip()
+                # <lastUpdated>20260515111108</lastUpdated>  → YYYY-MM-DD
+                m_upd = re.search(r"<lastUpdated>(\d{8})\d*</lastUpdated>", txt)
+                if m_upd:
+                    raw = m_upd.group(1)
+                    last_updated = f"{raw[0:4]}-{raw[4:6]}-{raw[6:8]}"
         except Exception:
             pass
 
@@ -3243,7 +3276,6 @@ class LinuxDistribAdapter(BaseAdapter):
         Returns ISO date (YYYY-MM-DD) or "—".
         """
         try:
-            # Step 1: get the list of files for this exact version
             r = requests.get(
                 f"https://snapshot.debian.org/mr/package/{requests.utils.quote(pkg)}/"
                 f"{requests.utils.quote(version)}/srcfiles?fileinfo=1",
@@ -3252,15 +3284,13 @@ class LinuxDistribAdapter(BaseAdapter):
             if r.status_code != 200:
                 return "—"
             data = r.json().get("fileinfo", {}) or {}
-            # Find the .dsc file (source description) — its first_seen is the upload time
             earliest = None
             for _hash, infos in data.items():
                 for info in infos:
-                    name      = info.get("name", "")
+                    name       = info.get("name", "")
                     first_seen = info.get("first_seen", "")
                     if not name.endswith(".dsc") or not first_seen:
                         continue
-                    # Format is YYYYMMDDTHHMMSSZ — convert to YYYY-MM-DD
                     if len(first_seen) >= 8 and first_seen[:8].isdigit():
                         iso = f"{first_seen[0:4]}-{first_seen[4:6]}-{first_seen[6:8]}"
                         if earliest is None or iso < earliest:
@@ -3268,6 +3298,41 @@ class LinuxDistribAdapter(BaseAdapter):
             return earliest or "—"
         except Exception:
             return "—"
+
+    @staticmethod
+    def _arch_last_update(pkg: str) -> str:
+        """Arch's official packages API exposes `last_update` per package."""
+        try:
+            r = requests.get(
+                f"https://archlinux.org/packages/search/json/?name={requests.utils.quote(pkg)}",
+                timeout=8,
+                headers={"User-Agent": "RegistryIntelligencePlatform/1.0"})
+            if r.status_code == 200:
+                results = r.json().get("results", [])
+                if results:
+                    return (results[0].get("last_update") or "—")
+        except Exception:
+            pass
+        return "—"
+
+    @staticmethod
+    def _fedora_last_push(pkg: str) -> str:
+        """Bodhi (Fedora's update system) tracks date_pushed per package update."""
+        try:
+            r = requests.get(
+                f"https://bodhi.fedoraproject.org/updates/"
+                f"?packages={requests.utils.quote(pkg)}&rows_per_page=1",
+                timeout=8,
+                headers={"User-Agent": "RegistryIntelligencePlatform/1.0",
+                         "Accept": "application/json"})
+            if r.status_code == 200:
+                updates = r.json().get("updates", [])
+                if updates:
+                    return (updates[0].get("date_pushed") or
+                            updates[0].get("date_submitted") or "—")
+        except Exception:
+            pass
+        return "—"
 
     def _repology(self, pkg: str) -> list:
         try:
@@ -3303,11 +3368,17 @@ class LinuxDistribAdapter(BaseAdapter):
                 lic_raw   = ", ".join(entry.get("licenses",   [])[:2]) or "—"
                 summary   = entry.get("summary", "—") or "—"
 
-                # For Debian/Ubuntu, snapshot.debian.org has real upload dates.
-                # Use the Debian-revision version (origversion) for accuracy.
+                # Each distro has its own authoritative date source:
+                # • Debian / Ubuntu   → snapshot.debian.org `.dsc` first_seen
+                # • Arch              → archlinux.org packages API `last_update`
+                # • Fedora / RHEL / CentOS → bodhi.fedoraproject.org `date_pushed`
                 last_updated = "—"
                 if reg_name in ("APT/Debian", "APT/Ubuntu"):
                     last_updated = self._debian_upload_date(pkg.lower(), origver)
+                elif reg_name == "Pacman/Arch":
+                    last_updated = self._arch_last_update(pkg.lower())
+                elif reg_name in ("YUM/Fedora", "YUM/RHEL", "YUM/CentOS"):
+                    last_updated = self._fedora_last_push(pkg.lower())
 
                 rows.append(_row(
                     pkg, reg_name, version, summary, lic_raw, 0,
