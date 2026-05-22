@@ -2656,6 +2656,43 @@ class MavenAdapter(BaseAdapter):
 
 
 class NuGetAdapter(BaseAdapter):
+    @staticmethod
+    def _nuget_published_date(pid: str, version: str) -> str:
+        """
+        NuGet's search API (`azuresearch-usnc.nuget.org/query`) does NOT return
+        a `published` date — it's always null. The authoritative source is the
+        Registration API which has `published` per catalog entry.
+
+        Endpoint: https://api.nuget.org/v3/registration5-semver1/{id_lower}/index.json
+        We pick the catalogEntry whose version matches the latest.
+        """
+        try:
+            r = requests.get(
+                f"https://api.nuget.org/v3/registration5-semver1/"
+                f"{pid.lower()}/index.json",
+                timeout=8)
+            if r.status_code != 200:
+                return "—"
+            pages = r.json().get("items", []) or []
+            # The last page contains the newest version
+            for page in reversed(pages):
+                inner = page.get("items", [])
+                # Inline data preferred; some pages link out to a separate page URL
+                if not inner and page.get("@id"):
+                    rr = requests.get(page["@id"], timeout=6)
+                    if rr.status_code == 200:
+                        inner = rr.json().get("items", [])
+                # Find the matching version (or take the last/newest in this page)
+                for entry in reversed(inner):
+                    ce = entry.get("catalogEntry", {}) or {}
+                    if ce.get("version") == version:
+                        return (ce.get("published") or "—")
+                if inner:
+                    return (inner[-1].get("catalogEntry", {}).get("published") or "—")
+        except Exception:
+            pass
+        return "—"
+
     def fetch(self, pkg, **kw):
         r = requests.get(
             f"https://azuresearch-usnc.nuget.org/query?q={pkg}&take=1", timeout=TIMEOUT)
@@ -2677,8 +2714,10 @@ class NuGetAdapter(BaseAdapter):
         lic_raw      = d.get("licenseExpression","") or d.get("licenseUrl","") or "—"
         lic          = lic_raw.rstrip("/").split("/")[-1] if lic_raw.startswith("http") else lic_raw
         c            = check_vuln(d.get("id",pkg),"NuGet")
-        last_updated = d.get("published","") or "—"
-        pid = d.get("id", pkg)
+        pid          = d.get("id", pkg)
+        ver          = d.get("version", "N/A")
+        # Search API returns published=null — use the Registration API instead
+        last_updated = d.get("published") or self._nuget_published_date(pid, ver)
         # Source button → always the NuGet page for this package
         return _row(pid, "NuGet", d.get("version","N/A"),
                     d.get("description",""), lic,
@@ -2695,7 +2734,10 @@ class NuGetAdapter(BaseAdapter):
                      d.get("description",""), "—",
                      d.get("totalDownloads",0), "—", "—",
                      f"https://www.nuget.org/packages/{d.get('id','')}",
-                     last_updated=d.get("published","") or "—")
+                     last_updated=(d.get("published")
+                                   or self._nuget_published_date(
+                                          d.get("id",""),
+                                          d.get("version",""))))
                 for d in r.json().get("data",[])]
 
 
