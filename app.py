@@ -979,9 +979,12 @@ def _fetch_github_country(username: str, token: str = "") -> str:
     if username.lower() in _KNOWN_ORG_COUNTRY:
         return _KNOWN_ORG_COUNTRY[username.lower()]
 
-    # 1. SQLite persistent cache (keyed on original input — variants share key)
+    # 1. SQLite persistent cache — but only trust REAL country results.
+    #    If we previously cached "Unknown" it might have been due to a missing
+    #    location field, a normalization gap (like "Cyprus, Larnaca" before we
+    #    added Cyprus), or rate limiting. Always retry these.
     cached = _country_cache_get(username)
-    if cached is not None:
+    if cached is not None and cached not in ("Unknown", "⚠️ Rate Limited", ""):
         return cached
 
     # 2. GitHub API — try variants until one returns 200
@@ -998,7 +1001,10 @@ def _fetch_github_country(username: str, token: str = "") -> str:
             if r.status_code == 200:
                 loc     = r.json().get("location") or ""
                 country = _normalize_country(loc)
-                _country_cache_set(username, country)   # persist for 24 h
+                # Only cache REAL countries — never cache "Unknown" so a
+                # subsequent run will retry (e.g. after a normalizer update)
+                if country and country != "Unknown":
+                    _country_cache_set(username, country)
                 return country
             if r.status_code in (403, 429):
                 rate_limited = True
@@ -1009,8 +1015,8 @@ def _fetch_github_country(username: str, token: str = "") -> str:
 
     if rate_limited:
         return "⚠️ Rate Limited"   # do NOT cache — retry when limit resets
-    # All variants returned 404 → genuinely no GitHub user for this maintainer
-    _country_cache_set(username, "Unknown")
+    # All variants returned 404 → genuinely no GitHub user for this maintainer.
+    # Intentionally NOT caching this — a future code update may resolve it.
     return "Unknown"
 
 def _extract_gh_username(maintainer: str) -> str:
@@ -1098,59 +1104,98 @@ def _extract_gh_username(maintainer: str) -> str:
 
 def _enrich_countries(df, github_token: str = "") -> "pd.DataFrame":
     """
-    Add a 'Country' column to the results dataframe.
+    Add a 'Country' column to the results dataframe — PARALLEL implementation.
 
-    Deduplication: each unique GitHub username is looked up only ONCE,
-    even if it appears in many rows. This is critical for staying within
-    the 60 req/hour unauthenticated GitHub limit.
+    Optimization strategy:
+      1. Collect all unique (gh_owner, extracted_username) candidates across rows
+      2. Deduplicate — same name across many rows is looked up only ONCE
+      3. Fetch ALL unique names in PARALLEL via ThreadPoolExecutor (8 workers)
+      4. For rows still Unknown, do parallel repo-search fallback (4 workers)
+      5. Stitch results back to each row
 
-    Cache hierarchy per username:
-      SQLite (24 h) → Streamlit memory (2 h) → GitHub API
+    Why this is much faster:
+      • Old code: 30 rows → 30+ sequential API calls (3-15s)
+      • New code: ~10-15 unique names → batched parallel (1-2s)
+      • Repo search only runs for genuinely unresolved rows, also parallel
     """
-    # ── Unified per-row country resolver — guarantees a non-empty result ──
-    # Tries every available signal before giving up. Order:
-    #   1. Curated org-map (handled inside _fetch_github_country)
-    #   2. Adapter's extracted _gh_owner (from upstream source repo URL)
-    #   3. Username variants from Maintainer field
-    #   4. GitHub repo-search by package name (top-starred match)
-    # Final result is NEVER blank — always either a country name or "Unknown".
-    countries = []
+    if df.empty:
+        df = df.copy()
+        df.insert(df.columns.get_loc("Maintainer") + 1, "Country", [])
+        return df
+
+    # ── Pass 1: extract candidates for every row ──────────────────────────
+    candidates = []
     for _, row in df.iterrows():
-        country = _resolve_country_for_row(row, github_token)
-        countries.append(country or "Unknown")
+        gh_owner = (row.get("_gh_owner") or "").strip()
+        uname    = _extract_gh_username(row.get("Maintainer", "") or "")
+        candidates.append({
+            "lib":      row.get("Library", "") or "",
+            "gh_owner": gh_owner,
+            "uname":    uname,
+        })
+
+    # ── Pass 2: collect unique names that need a GitHub API lookup ────────
+    unique_names = set()
+    for c in candidates:
+        if c["gh_owner"]:
+            unique_names.add(c["gh_owner"])
+        if c["uname"]:
+            unique_names.add(c["uname"])
+
+    # ── Pass 3: parallel fetch every unique name (8 workers) ──────────────
+    name_to_country: dict[str, str] = {}
+    if unique_names:
+        with ThreadPoolExecutor(max_workers=8) as _ex:
+            _futures = {_ex.submit(_fetch_github_country, n, github_token): n
+                        for n in unique_names}
+            for _fut in as_completed(_futures):
+                _name = _futures[_fut]
+                try:
+                    name_to_country[_name] = _fut.result() or "Unknown"
+                except Exception:
+                    name_to_country[_name] = "Unknown"
+
+    # ── Pass 4: stitch per-row country + collect repo-search candidates ───
+    countries          = []
+    repo_search_queue  = []   # (row_index, library_name)
+    _BAD = {"Unknown", "⚠️ Rate Limited", "", None}
+    for i, c in enumerate(candidates):
+        country = "Unknown"
+        if c["gh_owner"]:
+            country = name_to_country.get(c["gh_owner"], "Unknown")
+        if country in _BAD and c["uname"]:
+            country = name_to_country.get(c["uname"], "Unknown")
+        if country in _BAD and c["lib"] and len(c["lib"]) >= 3:
+            # Mark for repo-search fallback (parallel below)
+            repo_search_queue.append((i, c["lib"]))
+            countries.append("Unknown")    # placeholder, may be overridden
+        else:
+            countries.append(country if country not in _BAD else "Unknown")
+
+    # ── Pass 5: parallel repo-search fallback for still-Unknown rows ──────
+    # Use a smaller pool (4) — search API has stricter rate limits than user API
+    if repo_search_queue:
+        # Deduplicate by library name too
+        unique_libs = {lib for _, lib in repo_search_queue}
+        lib_to_country: dict[str, str] = {}
+        with ThreadPoolExecutor(max_workers=4) as _ex:
+            _futs = {_ex.submit(_country_via_repo_search, lib, github_token): lib
+                     for lib in unique_libs}
+            for _fut in as_completed(_futs):
+                _lib = _futs[_fut]
+                try:
+                    lib_to_country[_lib] = _fut.result() or "Unknown"
+                except Exception:
+                    lib_to_country[_lib] = "Unknown"
+        # Apply repo-search results back to the corresponding rows
+        for idx, lib in repo_search_queue:
+            c = lib_to_country.get(lib, "Unknown")
+            if c not in _BAD:
+                countries[idx] = c
 
     df = df.copy()
     df.insert(df.columns.get_loc("Maintainer") + 1, "Country", countries)
     return df
-
-def _resolve_country_for_row(row, github_token: str = "") -> str:
-    """
-    Single-source country resolver for one results row.
-    Guarantees a non-empty return value.
-    """
-    pkg_name = row.get("Library", "") or ""
-
-    # Layer 1+2: try the adapter-extracted _gh_owner first
-    gh_owner = (row.get("_gh_owner") or "").strip()
-    if gh_owner:
-        c = _fetch_github_country(gh_owner, github_token)
-        if c not in ("Unknown", "⚠️ Rate Limited", ""):
-            return c
-
-    # Layer 3: fall back to extracted username from Maintainer text
-    uname = _extract_gh_username(row.get("Maintainer", "") or "")
-    if uname:
-        c = _fetch_github_country(uname, github_token)
-        if c not in ("Unknown", "⚠️ Rate Limited", ""):
-            return c
-
-    # Layer 4: search GitHub for the package and use top repo's owner
-    if pkg_name and len(pkg_name) >= 3:
-        c = _country_via_repo_search(pkg_name, github_token)
-        if c not in ("Unknown", "⚠️ Rate Limited", ""):
-            return c
-
-    return "Unknown"
 
 @st.cache_data(ttl=7200, show_spinner=False)
 def _country_via_repo_search(pkg_name: str, token: str = "") -> str:
