@@ -814,7 +814,7 @@ def _lic(val):
     if val.startswith("http"): val = val.rstrip("/").split("/")[-1]
     return val or "—"
 
-def _clean_repo_url(url) -> str:
+def _clean_repo_url(url):
     """
     Normalize a repository URL to a clean https:// link.
 
@@ -825,22 +825,31 @@ def _clean_repo_url(url) -> str:
 
     All of these should become:
       https://github.com/axios/axios
+
+    Returns None when no valid URL exists, so Streamlit's LinkColumn
+    renders an empty cell instead of a broken link like /N/A.
     """
-    if not url or url in ("N/A", "—", ""):
-        return "N/A"
+    if not url or url in ("N/A", "—", "", "N\\A"):
+        return None
     if isinstance(url, dict):
-        url = url.get("url", "N/A")
+        url = url.get("url") or ""
     url = str(url).strip()
+    if not url or url in ("N/A", "—", "N\\A"):
+        return None
     # Strip git+ or git:// prefix
     url = re.sub(r"^git\+", "", url)
     url = re.sub(r"^git://", "https://", url)
+    url = re.sub(r"^ssh://git@", "https://", url)
     # Strip .git suffix
     if url.endswith(".git"):
         url = url[:-4]
-    # Ensure https://
+    # Force https://
     if url.startswith("http://"):
         url = "https://" + url[7:]
-    return url or "N/A"
+    # Final validation — must be a real web URL
+    if not url.startswith(("https://", "http://")):
+        return None
+    return url
 
 def _fmt_date(s):
     """Return YYYY-MM-DD from any ISO-ish string, or '—'."""
@@ -1377,7 +1386,10 @@ def _row(lib, reg, ver="N/A", desc="—", lic="—", dl=0,
         "Downloads":    _fmt_dl(dl),
         "Last Updated": _fmt_date(last_updated),
         "Description":  _trunc(desc),
-        "Repo":         repo or "N/A",
+        # _clean_repo_url normalises every adapter's URL: strips git+ prefix,
+        # converts git:// → https://, removes .git suffix, ensures https://
+        # This guarantees every Source button gets a clickable, working link.
+        "Repo":         _clean_repo_url(repo),
         "_dl_raw":      int(dl) if dl else 0,   # internal sort key, dropped before display
     }
 
@@ -2087,6 +2099,19 @@ def gh_repo_info(repo_path: str, token=None):
 # ── Adapters ───────────────────────────────────────────────────────────────────
 
 class PyPIAdapter(BaseAdapter):
+    @staticmethod
+    def _pypi_source_url(info: dict, pkg_name: str) -> str:
+        """
+        Always return the PyPI package's own page as the Source link.
+
+        Why: when a user searches PyPI, they expect to land on PyPI — not on
+        whatever GitHub repo a maintainer happened to put in the Homepage field
+        (which can be misleading, abandoned, or unrelated to the actual published
+        package). The PyPI page is the authoritative source — it shows the real
+        version, maintainer, download stats, AND the GitHub link if available.
+        """
+        return f"https://pypi.org/project/{pkg_name}/"
+
     def fetch(self, pkg, **kw):
         r = requests.get(f"https://pypi.org/pypi/{pkg}/json", timeout=TIMEOUT)
         if r.status_code != 200: return None
@@ -2109,7 +2134,7 @@ class PyPIAdapter(BaseAdapter):
         c    = check_vuln(pkg, "PyPI")
         return _row(pkg, "PyPI", v, d.get("summary",""), d.get("license",""),
                     dl, m, c,
-                    (d.get("project_urls") or {}).get("Source","N/A"),
+                    self._pypi_source_url(d, pkg),
                     last_updated=last_updated)
 
     def search(self, q, **kw):
@@ -2126,7 +2151,7 @@ class PyPIAdapter(BaseAdapter):
         name = d.get("maintainer") or d.get("author") or "—"
         return [_row(slug, "PyPI", v, d.get("summary",""), d.get("license",""), 0,
                      _m_auto(name), "—",
-                     (d.get("project_urls") or {}).get("Source","N/A"),
+                     self._pypi_source_url(d, slug),
                      last_updated=last_updated)]
 
 
@@ -2206,9 +2231,10 @@ class NPMAdapter(BaseAdapter):
 
         m = self._npm_maintainer(pkg, d)
         c = check_vuln(pkg,"npm")
+        # Source button → always the npm page for this package
         return _row(pkg, "NPM", v, d.get("description",""), d.get("license",""),
                     dl, m, c,
-                    _clean_repo_url(repo),
+                    f"https://www.npmjs.com/package/{pkg}",
                     last_updated=last_updated)
 
     def search(self, q, **kw):
@@ -2253,11 +2279,12 @@ class RubyGemsAdapter(BaseAdapter):
         m    = _m_auto(authors)
         c    = check_vuln(pkg.lower(),"RubyGems")
         last_updated = d.get("version_created_at","") or d.get("created_at","") or "—"
+        # Source button → always the RubyGems page for this gem
         return _row(pkg.lower(), "RubyGems", d.get("version","N/A"),
                     d.get("info",""),
                     ", ".join(d.get("licenses") or []) if d.get("licenses") else "—",
                     d.get("downloads",0), m, c,
-                    d.get("source_code_uri") or d.get("homepage_uri","N/A"),
+                    f"https://rubygems.org/gems/{pkg.lower()}",
                     last_updated=last_updated)
 
     def search(self, q, **kw):
@@ -2270,7 +2297,7 @@ class RubyGemsAdapter(BaseAdapter):
                      ", ".join(g.get("licenses") or []) if g.get("licenses") else "—",
                      g.get("downloads",0),
                      _m_auto(g.get("authors","—")), "—",
-                     g.get("source_code_uri") or g.get("homepage_uri","N/A"),
+                     f"https://rubygems.org/gems/{g.get('name','')}",
                      last_updated=g.get("version_created_at","") or "—")
                 for g in r.json()[:SEARCH_LIMIT]]
 
@@ -2282,8 +2309,18 @@ class CratesAdapter(BaseAdapter):
         if r.status_code != 200: return None
         data     = r.json()
         cr       = data.get("crate",{})
-        v        = cr.get("max_stable_version") or cr.get("max_version","N/A")
         versions = data.get("versions",[])
+
+        # crates.io quirk: when every published version has been yanked, the API
+        # reports max_version="0.0.0" as a placeholder. The real latest version
+        # still lives in `versions[]` — surface it with a "(yanked)" suffix so
+        # the user knows what the package actually contains.
+        v = cr.get("max_stable_version") or cr.get("max_version", "N/A")
+        if v in ("0.0.0", None, "N/A") and versions:
+            real_latest = versions[0].get("num", v)
+            yanked      = versions[0].get("yanked", False)
+            v = f"{real_latest} (yanked)" if yanked else real_latest
+
         lic      = versions[0].get("license","—") if versions else "—"
         # Try owner endpoint for maintainer info
         m = "—"
@@ -2305,9 +2342,12 @@ class CratesAdapter(BaseAdapter):
         except: pass
         c            = check_vuln(pkg,"crates.io")
         last_updated = cr.get("updated_at","") or "—"
+
+        # Source button → always the crates.io page for this crate
         return _row(pkg, "Crates.io", v,
                     cr.get("description",""), lic,
-                    cr.get("downloads",0), m, c, cr.get("repository","N/A"),
+                    cr.get("downloads",0), m, c,
+                    f"https://crates.io/crates/{pkg}",
                     last_updated=last_updated)
 
     def search(self, q, **kw):
@@ -2318,7 +2358,9 @@ class CratesAdapter(BaseAdapter):
         return [_row(c.get("name","?"), "Crates.io",
                      c.get("max_stable_version") or c.get("max_version","N/A"),
                      c.get("description",""), "—",
-                     c.get("downloads",0), "—", "—", c.get("repository","N/A"),
+                     c.get("downloads",0), "—", "—",
+                     (c.get("repository") or c.get("homepage") or
+                      f"https://crates.io/crates/{c.get('name','')}"),
                      last_updated=c.get("updated_at","") or "—")
                 for c in r.json().get("crates",[])]
 
@@ -2354,9 +2396,10 @@ class PackagistAdapter(BaseAdapter):
         if stables and stables[0] in all_ver:
             last_updated = all_ver[stables[0]].get("time","") or "—"
         c = check_vuln(full,"Packagist")
+        # Source button → always the Packagist page for this package
         return _row(full, "Packagist", v,
                     pk.get("description",""), lic, dl, m, c,
-                    pk.get("repository","N/A"),
+                    f"https://packagist.org/packages/{full}",
                     last_updated=last_updated)
 
     def search(self, q, **kw):
@@ -2494,20 +2537,25 @@ class MavenAdapter(BaseAdapter):
         last_updated = (datetime.datetime.utcfromtimestamp(ts / 1000).strftime("%Y-%m-%d")
                         if ts else "—")
 
-        # The Solr `latestVersion` field can be stale/cached.
-        # Fetch the real latest version via the GAV core (sorted newest first).
+        # The Solr Search API's `latestVersion` is GENUINELY STALE — it doesn't
+        # index newer releases. The authoritative source is Maven Central's
+        # own maven-metadata.xml file, which always reflects the actual repo state.
+        # e.g. org.webjars.npm:axios — Solr says 1.10.0, metadata.xml says 1.16.1
         latest_ver = d.get("latestVersion", "N/A")
         try:
-            gav_r = requests.get(
-                f"https://search.maven.org/solrsearch/select"
-                f"?q=g:{requests.utils.quote(g)}+AND+a:{requests.utils.quote(a_id)}"
-                f"&core=gav&rows=1&wt=json",
+            g_path = g.replace(".", "/")
+            meta_r = requests.get(
+                f"https://repo1.maven.org/maven2/{g_path}/{a_id}/maven-metadata.xml",
                 timeout=TIMEOUT
             )
-            if gav_r.status_code == 200:
-                gav_docs = gav_r.json().get("response", {}).get("docs", [])
-                if gav_docs:
-                    latest_ver = gav_docs[0].get("v", latest_ver)
+            if meta_r.status_code == 200:
+                # Prefer <release> (stable), fall back to <latest>
+                m_rel = re.search(r"<release>([^<]+)</release>", meta_r.text)
+                m_lat = re.search(r"<latest>([^<]+)</latest>",   meta_r.text)
+                if m_rel:
+                    latest_ver = m_rel.group(1).strip()
+                elif m_lat:
+                    latest_ver = m_lat.group(1).strip()
         except Exception:
             pass
 
@@ -2558,9 +2606,12 @@ class NuGetAdapter(BaseAdapter):
         lic          = lic_raw.rstrip("/").split("/")[-1] if lic_raw.startswith("http") else lic_raw
         c            = check_vuln(d.get("id",pkg),"NuGet")
         last_updated = d.get("published","") or "—"
-        return _row(d.get("id",pkg), "NuGet", d.get("version","N/A"),
+        pid = d.get("id", pkg)
+        # Source button → always the NuGet page for this package
+        return _row(pid, "NuGet", d.get("version","N/A"),
                     d.get("description",""), lic,
-                    d.get("totalDownloads",0), m, c, d.get("projectUrl","N/A"),
+                    d.get("totalDownloads",0), m, c,
+                    f"https://www.nuget.org/packages/{pid}",
                     last_updated=last_updated)
 
     def search(self, q, **kw):
@@ -2570,7 +2621,8 @@ class NuGetAdapter(BaseAdapter):
         if r.status_code != 200: return []
         return [_row(d.get("id","?"), "NuGet", d.get("version","N/A"),
                      d.get("description",""), "—",
-                     d.get("totalDownloads",0), "—", "—", d.get("projectUrl","N/A"),
+                     d.get("totalDownloads",0), "—", "—",
+                     f"https://www.nuget.org/packages/{d.get('id','')}",
                      last_updated=d.get("published","") or "—")
                 for d in r.json().get("data",[])]
 
@@ -2612,9 +2664,11 @@ class HomebrewAdapter(BaseAdapter):
             if r.status_code == 200:
                 d = r.json()
                 v = (d.get("versions") or {}).get("stable") or d.get("version","N/A")
+                # Source button → always the Homebrew formulae page
                 return _row(name, "Homebrew", v,
                             d.get("desc",""), "—", 0,
-                            "Community · Homebrew", "—", d.get("homepage","N/A"),
+                            "Community · Homebrew", "—",
+                            f"https://formulae.brew.sh/{kind}/{name}",
                             last_updated="—")
         return None
 
@@ -2730,10 +2784,12 @@ class WordPressAdapter(BaseAdapter):
         # Strip HTML tags from author field
         import re
         author = re.sub(r"<[^>]+>","",author).strip()
+        # Source button → always the WordPress.org plugin page
         return _row(pkg.lower(), "WordPress Plugins", d.get("version","N/A"),
                     d.get("short_description",""), "GPL-2.0",
                     d.get("active_installs",0),
-                    _m_user(author), "—", d.get("homepage","N/A"),
+                    _m_user(author), "—",
+                    f"https://wordpress.org/plugins/{pkg.lower()}/",
                     last_updated=d.get("last_updated","") or "—")
 
     def search(self, q, **kw):
@@ -2747,7 +2803,8 @@ class WordPressAdapter(BaseAdapter):
                      p.get("short_description",""), "GPL-2.0",
                      p.get("active_installs",0),
                      _m_user(re.sub(r"<[^>]+>","",p.get("author","—")).strip()),
-                     "—", p.get("homepage","N/A"),
+                     "—",
+                     f"https://wordpress.org/plugins/{p.get('slug','')}/",
                      last_updated=p.get("last_updated","") or "—")
                 for p in r.json().get("plugins",[])]
 
@@ -2796,10 +2853,12 @@ class AnsibleGalaxyAdapter(BaseAdapter):
         d  = res[0]
         if not _exact_match(pkg, d.get("name","")): return None
         ns = (d.get("summary_fields") or {}).get("namespace",{}).get("name","—")
+        # Source button → always the Ansible Galaxy page
         return _row(f"{ns}.{d.get('name',pkg)}", "Ansible Galaxy",
                     d.get("version","N/A"), d.get("description",""), "—",
                     d.get("download_count",0),
-                    _m_user(ns), "—", d.get("github_repo","N/A"),
+                    _m_user(ns), "—",
+                    f"https://galaxy.ansible.com/{ns}/{d.get('name','')}",
                     last_updated=d.get("modified","") or "—")
 
     def search(self, q, **kw):
@@ -2832,10 +2891,12 @@ class ChocolateyAdapter(BaseAdapter):
         if not entries: return None
         e            = entries[0]
         last_updated = _fmt_date(e.get("Published","") or e.get("LastEdited","") or "—")
+        # Source button → always the Chocolatey package page
         return _row(pkg, "Chocolatey", e.get("Version","N/A"),
                     e.get("Description",""), "—",
                     e.get("DownloadCount",0),
-                    "Community · Chocolatey", "—", e.get("ProjectUrl","N/A"),
+                    "Community · Chocolatey", "—",
+                    f"https://community.chocolatey.org/packages/{pkg}",
                     last_updated=last_updated)
 
     def search(self, q, **kw):
@@ -2849,7 +2910,8 @@ class ChocolateyAdapter(BaseAdapter):
         return [_row(e.get("Id","?"), "Chocolatey", e.get("Version","N/A"),
                      e.get("Description",""), "—",
                      e.get("DownloadCount",0),
-                     "Community · Chocolatey", "—", e.get("ProjectUrl","N/A"),
+                     "Community · Chocolatey", "—",
+                     f"https://community.chocolatey.org/packages/{e.get('Id','')}",
                      last_updated=_fmt_date(e.get("Published","") or e.get("LastEdited","") or "—"))
                 for e in entries]
 
@@ -2878,9 +2940,11 @@ class VSCodeAdapter(BaseAdapter):
                      if s.get("statisticName")=="install"),0)
         pub_display  = pub.get("displayName") or pub.get("publisherName","—")
         last_updated = ver.get("lastUpdated","") or "—"
+        # Source button → always the VS Code Marketplace page
         return _row(fid, "VS Code Marketplace", ver.get("version","N/A"),
                     ext.get("shortDescription",""), "—", inst,
-                    _m_auto(pub_display), "—", src,
+                    _m_auto(pub_display), "—",
+                    f"https://marketplace.visualstudio.com/items?itemName={fid}",
                     last_updated=last_updated)
 
     def search(self, q, **kw):
@@ -2901,10 +2965,12 @@ class VSCodeAdapter(BaseAdapter):
             inst = next((int(s.get("value",0)) for s in (ext.get("statistics") or [])
                          if s.get("statisticName")=="install"),0)
             pub_display = pub.get("displayName") or pub.get("publisherName","—")
-            out.append(_row(f"{pub.get('publisherName')}.{ext.get('extensionName')}",
+            _fid = f"{pub.get('publisherName')}.{ext.get('extensionName')}"
+            out.append(_row(_fid,
                             "VS Code Marketplace", ver.get("version","N/A"),
                             ext.get("shortDescription",""), "—", inst,
-                            _m_auto(pub_display), "—", "N/A",
+                            _m_auto(pub_display), "—",
+                            f"https://marketplace.visualstudio.com/items?itemName={_fid}",
                             last_updated=ver.get("lastUpdated","") or "—"))
         return out
 
@@ -3073,11 +3139,11 @@ class WingetAdapter(BaseAdapter):
         desc   = (latest.get("Description") or p.get("Description") or
                   ", ".join(latest.get("Tags") or []) or "—")
         lic    = latest.get("License") or "—"
-        homepage = latest.get("Homepage") or ""
         updated  = (p.get("UpdatedAt") or p.get("updatedAt") or "—")[:10]
         m   = _m_org(pub) if pub else "—"
-        url = homepage or (f"https://winget.run/pkg/{pub}/{pid}"
-                           if pub else "https://winget.run/")
+        # Source button → always the winget.run page for this package
+        url = (f"https://winget.run/pkg/{pub}/{pid}".replace(" ", "")
+               if pub else "https://winget.run/")
         return _row(name, "Winget", ver, desc, lic, 0, m, "—", url, last_updated=updated)
 
     @staticmethod
@@ -3292,9 +3358,11 @@ class WingetAdapter(BaseAdapter):
                 publisher_n = _yval("Publisher")         or publisher
                 maintainer  = _m_auto(publisher_n)
 
+                # Source button → always the winget-pkgs manifest tree page
+                # (not the homepage, which could be any random vendor site)
                 return _row(name, "Winget", version, description, license_,
                             0, maintainer, "—",
-                            homepage or pkg_tree_url)
+                            f"https://winget.run/pkg/{publisher_n}/{pkg_name}".replace(" ", ""))
             except Exception:
                 return _row(pkg_name, "Winget", version_dir, "—", "—", 0,
                             _m_user(publisher), "—", pkg_tree_url)
