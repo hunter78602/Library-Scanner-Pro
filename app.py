@@ -2130,6 +2130,54 @@ class PyPIAdapter(BaseAdapter):
         """
         return f"https://pypi.org/project/{pkg_name}/"
 
+    @staticmethod
+    def _pypi_license(info: dict) -> str:
+        """
+        Extract the most authoritative license string from a PyPI package.
+        Order of trust:
+          1. license_expression (PEP 639 SPDX — most modern, most accurate)
+          2. license            (legacy free-text field)
+          3. classifiers — parse "License :: OSI Approved :: MIT License" etc.
+        Returns "—" only when no source contains any license signal.
+        """
+        # 1. PEP 639 SPDX expression (modern, accurate)
+        le = (info.get("license_expression") or "").strip()
+        if le:
+            return le
+        # 2. Legacy license field
+        lic = (info.get("license") or "").strip()
+        if lic and lic.lower() not in ("unknown", "none", "n/a"):
+            # Trim very long license texts to just the first line
+            return lic.split("\n")[0][:60]
+        # 3. Walk classifiers for license trove markers
+        # Example: "License :: OSI Approved :: Apache Software License"
+        spdx_map = {
+            "mit license":                     "MIT",
+            "apache software license":         "Apache-2.0",
+            "apache license":                  "Apache-2.0",
+            "bsd license":                     "BSD",
+            "gnu general public license v3":   "GPL-3.0",
+            "gnu general public license v2":   "GPL-2.0",
+            "gnu lesser general public license":"LGPL",
+            "mozilla public license":          "MPL-2.0",
+            "isc license":                     "ISC",
+            "the unlicense":                   "Unlicense",
+            "public domain":                   "Public Domain",
+            "creative commons":                "CC",
+        }
+        for c in (info.get("classifiers") or []):
+            if not c.lower().startswith("license ::"):
+                continue
+            cl = c.lower()
+            for needle, spdx in spdx_map.items():
+                if needle in cl:
+                    return spdx
+            # Fallback: take the last segment of the classifier as-is
+            last_seg = c.split("::")[-1].strip()
+            if last_seg and last_seg.lower() != "other/proprietary license":
+                return last_seg[:30]
+        return "—"
+
     def fetch(self, pkg, **kw):
         r = requests.get(f"https://pypi.org/pypi/{pkg}/json", timeout=TIMEOUT)
         if r.status_code != 200: return None
@@ -2150,7 +2198,8 @@ class PyPIAdapter(BaseAdapter):
         name = d.get("maintainer") or d.get("author") or "—"
         m    = _m_auto(name)
         c    = check_vuln(pkg, "PyPI")
-        return _row(pkg, "PyPI", v, d.get("summary",""), d.get("license",""),
+        return _row(pkg, "PyPI", v, d.get("summary",""),
+                    self._pypi_license(d),
                     dl, m, c,
                     self._pypi_source_url(d, pkg),
                     last_updated=last_updated)
@@ -2167,7 +2216,8 @@ class PyPIAdapter(BaseAdapter):
         if v in releases and releases[v]:
             last_updated = releases[v][-1].get("upload_time", "—")
         name = d.get("maintainer") or d.get("author") or "—"
-        return [_row(slug, "PyPI", v, d.get("summary",""), d.get("license",""), 0,
+        return [_row(slug, "PyPI", v, d.get("summary",""),
+                     self._pypi_license(d), 0,
                      _m_auto(name), "—",
                      self._pypi_source_url(d, slug),
                      last_updated=last_updated)]
@@ -2678,6 +2728,41 @@ class GoModulesAdapter(BaseAdapter):
 
 
 class HomebrewAdapter(BaseAdapter):
+    @staticmethod
+    def _formula_last_commit(kind: str, name: str, token: str = None) -> str:
+        """
+        Homebrew's formulae.brew.sh API doesn't expose a last-updated date,
+        but the homebrew-core / homebrew-cask repos on GitHub do. Look up
+        the most recent commit touching the formula file.
+        """
+        path = "Formula" if kind == "formula" else "Cask"
+        repo = "homebrew-core" if kind == "formula" else "homebrew-cask"
+        # Recent Homebrew core layout: Formula/{letter}/{name}.rb (sharded)
+        # Try sharded path first, then flat path as fallback.
+        candidates = [
+            f"{path}/{name[0]}/{name}.rb",
+            f"{path}/{name}.rb",
+        ]
+        headers = {"User-Agent": "RegistryIntelligencePlatform/1.0",
+                   "Accept":     "application/vnd.github+json"}
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+        for cpath in candidates:
+            try:
+                r = requests.get(
+                    f"https://api.github.com/repos/Homebrew/{repo}/commits"
+                    f"?path={requests.utils.quote(cpath)}&per_page=1",
+                    headers=headers, timeout=6)
+                if r.status_code == 200:
+                    commits = r.json()
+                    if commits:
+                        return ((commits[0].get("commit") or {})
+                                .get("committer", {})
+                                .get("date", "") or "—")
+            except Exception:
+                continue
+        return "—"
+
     def fetch(self, pkg, **kw):
         name = pkg.lower()
         for kind in ["formula","cask"]:
@@ -2686,12 +2771,14 @@ class HomebrewAdapter(BaseAdapter):
             if r.status_code == 200:
                 d = r.json()
                 v = (d.get("versions") or {}).get("stable") or d.get("version","N/A")
+                # Last updated → last commit touching the formula file on GitHub
+                lu = self._formula_last_commit(kind, name, kw.get("token"))
                 # Source button → always the Homebrew formulae page
                 return _row(name, "Homebrew", v,
                             d.get("desc",""), "—", 0,
                             "Community · Homebrew", "—",
                             f"https://formulae.brew.sh/{kind}/{name}",
-                            last_updated="—")
+                            last_updated=lu)
         return None
 
 
@@ -3016,13 +3103,17 @@ class GHCRAdapter(BaseAdapter):
                 f"https://api.github.com/{ent}/{owner}/packages/container/{p}/versions",
                 headers=h, timeout=TIMEOUT)
             if r.status_code == 200:
-                v = r.json()[0].get("name","N/A") if r.json() else "N/A"
+                versions_data = r.json()
+                v = versions_data[0].get("name","N/A") if versions_data else "N/A"
+                # GitHub Packages API returns updated_at + created_at per version
+                lu = (versions_data[0].get("updated_at") or
+                      versions_data[0].get("created_at") or "—") if versions_data else "—"
                 m = _m_org(owner) if ent == "orgs" else _m_user(owner)
                 # Library shows just the image name; owner stays in Maintainer
                 return _row(p, "GHCR", v,
                             "GitHub Container Registry", "—", 0, m, "—",
                             f"https://ghcr.io/{pkg}",
-                            last_updated="—")
+                            last_updated=lu)
         return None
 
 
@@ -3102,6 +3193,40 @@ class LinuxDistribAdapter(BaseAdapter):
     """
     TTL = 86400
 
+    @staticmethod
+    def _debian_upload_date(pkg: str, version: str) -> str:
+        """
+        Look up the upload date for a Debian package version via snapshot.debian.org.
+        Repology itself doesn't expose dates, but Debian's snapshot archive does.
+        Returns ISO date (YYYY-MM-DD) or "—".
+        """
+        try:
+            # Step 1: get the list of files for this exact version
+            r = requests.get(
+                f"https://snapshot.debian.org/mr/package/{requests.utils.quote(pkg)}/"
+                f"{requests.utils.quote(version)}/srcfiles?fileinfo=1",
+                timeout=8,
+                headers={"User-Agent": "RegistryIntelligencePlatform/1.0"})
+            if r.status_code != 200:
+                return "—"
+            data = r.json().get("fileinfo", {}) or {}
+            # Find the .dsc file (source description) — its first_seen is the upload time
+            earliest = None
+            for _hash, infos in data.items():
+                for info in infos:
+                    name      = info.get("name", "")
+                    first_seen = info.get("first_seen", "")
+                    if not name.endswith(".dsc") or not first_seen:
+                        continue
+                    # Format is YYYYMMDDTHHMMSSZ — convert to YYYY-MM-DD
+                    if len(first_seen) >= 8 and first_seen[:8].isdigit():
+                        iso = f"{first_seen[0:4]}-{first_seen[4:6]}-{first_seen[6:8]}"
+                        if earliest is None or iso < earliest:
+                            earliest = iso
+            return earliest or "—"
+        except Exception:
+            return "—"
+
     def _repology(self, pkg: str) -> list:
         try:
             r = requests.get(
@@ -3131,14 +3256,22 @@ class LinuxDistribAdapter(BaseAdapter):
                     continue          # one entry per registry type (newest suite)
                 seen_reg.add(reg_name)
                 version   = entry.get("version", "N/A") or "N/A"
+                origver   = entry.get("origversion", "") or version
                 maint_raw = ", ".join(entry.get("maintainers", [])[:2]) or "—"
                 lic_raw   = ", ".join(entry.get("licenses",   [])[:2]) or "—"
                 summary   = entry.get("summary", "—") or "—"
+
+                # For Debian/Ubuntu, snapshot.debian.org has real upload dates.
+                # Use the Debian-revision version (origversion) for accuracy.
+                last_updated = "—"
+                if reg_name in ("APT/Debian", "APT/Ubuntu"):
+                    last_updated = self._debian_upload_date(pkg.lower(), origver)
+
                 rows.append(_row(
                     pkg, reg_name, version, summary, lic_raw, 0,
                     _m_auto(maint_raw), "—",
                     f"https://repology.org/project/{pkg}/versions",
-                    last_updated="—"))
+                    last_updated=last_updated))
             return rows
         except Exception:
             return []
@@ -3676,19 +3809,22 @@ class ArtifactoryAdapter(BaseAdapter):
             for item in r.json().get("results", [])[:SEARCH_LIMIT]:
                 uri   = item.get("uri","")
                 fname = uri.split("/")[-1] if uri else pkg
-                # Fetch item properties for version/size
-                ver, dl = "N/A", 0
+                # Fetch item properties for version/size/dates
+                ver, dl, lu = "N/A", 0, "—"
                 try:
                     rp = requests.get(uri, headers=self._hdrs, timeout=5)
                     if rp.status_code == 200:
                         info = rp.json()
                         ver  = info.get("checksums",{}).get("sha1","N/A")[:8]
                         dl   = info.get("size", 0)
+                        # Artifactory exposes lastUpdated + lastModified
+                        lu   = (info.get("lastUpdated") or
+                                info.get("lastModified") or "—")
                 except Exception:
                     pass
                 results.append(_row(
                     fname, "Artifactory", ver, "—", "—", dl,
-                    "—", "—", uri, last_updated="—"))
+                    "—", "—", uri, last_updated=lu))
             return results
         except Exception:
             return []
@@ -3733,11 +3869,16 @@ class NexusRepositoryAdapter(BaseAdapter):
                 fmt     = item.get("format","")
                 assets  = item.get("assets",[])
                 dl_url  = assets[0].get("downloadUrl","N/A") if assets else "N/A"
+                # Nexus asset has lastModified / blobCreated timestamps
+                lu = "—"
+                if assets:
+                    lu = (assets[0].get("lastModified") or
+                          assets[0].get("blobCreated")  or "—")
                 m = _m_auto(item.get("group","") or "—")
                 results.append(_row(
                     name, "Nexus Repository", version,
                     f"Format: {fmt} · Repo: {repo}", "—", 0,
-                    m, "—", dl_url, last_updated="—"))
+                    m, "—", dl_url, last_updated=lu))
             return results
         except Exception:
             return []
