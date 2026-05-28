@@ -6980,14 +6980,6 @@ if "scan_data" in st.session_state:
                                 language="json",
                             )
 
-                    st.download_button(
-                        "⬇ Export All Raised Queries (JSON)",
-                        data=json.dumps(_rq, indent=2, ensure_ascii=False),
-                        file_name="raised_queries.json",
-                        mime="application/json",
-                        use_container_width=True,
-                        key="dl_raised_queries",
-                    )
 
                 st.markdown("---")
 
