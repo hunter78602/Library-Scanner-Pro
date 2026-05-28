@@ -2042,7 +2042,7 @@ _SECURITY_CHECKS_JSON = [
     },
     {
         "id":          "C2",
-        "json_id":     "PACKAGE_ACTIVITY",
+        "json_id":     "ABANDONED_PACKAGE",
         "category":    "maintenance",
         "name":        "Abandoned Package",
         "description": "Flags packages with no published updates in 6 months (aging) "
