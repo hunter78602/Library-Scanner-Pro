@@ -6963,7 +6963,7 @@ if "scan_data" in st.session_state:
                     )
 
                     for _q in _rq:
-                        _qs    = _q["overall_risk"]["severity"]
+                        _qs    = _q["overall_risk"].get("worst_check_severity") or _q["overall_risk"].get("severity", "pass")
                         _qemj  = _SEV_EMOJI.get(_qs, "🟡")
                         _qlbl  = _SEV_LABEL.get(_qs, _qs.title())
                         _nfail = sum(1 for c in _q["checks"] if c["status"] != "pass")
