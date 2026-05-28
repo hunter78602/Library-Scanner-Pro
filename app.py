@@ -345,22 +345,45 @@ def cache_delete(key):
 
 
 def save_scan_history(audit_rows: list, raised_queries: list, summary: dict):
-    """Persist a completed scan run (packages + raised queries + summary) to PostgreSQL."""
+    """Persist a completed scan run (raised queries + summary) to PostgreSQL.
+
+    Deduplication: skip insert if an identical set of libraries+registries
+    was scanned within the last 5 minutes (prevents double-inserts from
+    rapid re-clicks and Streamlit re-runs).
+    """
     try:
-        # Strip non-serialisable internal keys (prefixed with _)
-        clean_rows = [
-            {k: v for k, v in row.items() if not k.startswith("_")}
-            for row in audit_rows
-        ]
+        # Build a canonical fingerprint: sorted list of "library@registry" strings
+        pkg_keys = sorted(
+            f"{r.get('Library','?')}@{r.get('Registry','?')}"
+            for r in audit_rows
+        )
+        fingerprint = json.dumps(pkg_keys)
+
         with _pg_conn() as conn:
             cur = conn.cursor()
+
+            # Deduplication check — same package set scanned in the last 5 min?
             cur.execute(
-                """INSERT INTO scan_history (packages, raised_queries, summary)
-                   VALUES (%s::jsonb, %s::jsonb, %s::jsonb)""",
+                """SELECT id FROM scan_history
+                   WHERE summary->>'_fingerprint' = %s
+                     AND scanned_at >= NOW() - INTERVAL '5 minutes'
+                   LIMIT 1""",
+                (fingerprint,)
+            )
+            if cur.fetchone():
+                cur.close()
+                return   # duplicate — skip
+
+            # Embed fingerprint in summary so the dedup query works
+            summary_stored = dict(summary)
+            summary_stored["_fingerprint"] = fingerprint
+
+            cur.execute(
+                """INSERT INTO scan_history (raised_queries, summary)
+                   VALUES (%s::jsonb, %s::jsonb)""",
                 (
-                    json.dumps(clean_rows,    default=str),
                     json.dumps(raised_queries, default=str),
-                    json.dumps(summary,        default=str),
+                    json.dumps(summary_stored,  default=str),
                 )
             )
             cur.close()
@@ -1781,35 +1804,35 @@ def _license_risk(license_str: str) -> str:
 # Country risk tiers — conservative defaults; user can adjust as needed.
 _COUNTRY_TIER: dict[str, str] = {
     # 🟢 Trusted — Western democracies + strong tech-allied nations
-    "United States":"🟢 Trusted","United Kingdom":"🟢 Trusted",
-    "Germany":"🟢 Trusted","Canada":"🟢 Trusted","Australia":"🟢 Trusted",
-    "Japan":"🟢 Trusted","South Korea":"🟢 Trusted","Singapore":"🟢 Trusted",
-    "Netherlands":"🟢 Trusted","Sweden":"🟢 Trusted","France":"🟢 Trusted",
-    "Switzerland":"🟢 Trusted","Norway":"🟢 Trusted","Finland":"🟢 Trusted",
-    "Denmark":"🟢 Trusted","Ireland":"🟢 Trusted","New Zealand":"🟢 Trusted",
-    "Austria":"🟢 Trusted","Belgium":"🟢 Trusted","Luxembourg":"🟢 Trusted",
-    "Iceland":"🟢 Trusted","Taiwan":"🟢 Trusted","Israel":"🟢 Trusted",
-    # 🟡 Caution — large active dev communities but variable supply-chain hygiene
-    "India":"🟡 Caution","Brazil":"🟡 Caution","Mexico":"🟡 Caution",
-    "Poland":"🟡 Caution","Ukraine":"🟡 Caution","Romania":"🟡 Caution",
-    "Czech Republic":"🟡 Caution","Spain":"🟡 Caution","Italy":"🟡 Caution",
-    "Portugal":"🟡 Caution","Turkey":"🟡 Caution","Bulgaria":"🟡 Caution",
-    "Hungary":"🟡 Caution","South Africa":"🟡 Caution","Greece":"🟡 Caution",
-    "Argentina":"🟡 Caution","Chile":"🟡 Caution","Indonesia":"🟡 Caution",
-    "Vietnam":"🟡 Caution","Malaysia":"🟡 Caution","Philippines":"🟡 Caution",
-    "Thailand":"🟡 Caution","Egypt":"🟡 Caution","Pakistan":"🟡 Caution",
-    "Bangladesh":"🟡 Caution","Nigeria":"🟡 Caution","Kenya":"🟡 Caution",
-    "Morocco":"🟡 Caution","Colombia":"🟡 Caution","Saudi Arabia":"🟡 Caution",
-    "United Arab Emirates":"🟡 Caution","Lithuania":"🟡 Caution",
-    "Latvia":"🟡 Caution","Estonia":"🟡 Caution","Slovakia":"🟡 Caution",
-    "Croatia":"🟡 Caution","Serbia":"🟡 Caution","Slovenia":"🟡 Caution",
-    "Cyprus":"🟡 Caution","Malta":"🟡 Caution","Hong Kong":"🟡 Caution",
-    # 🔴 Restricted — commonly flagged in compliance / sanctions contexts
-    "Russia":"🔴 Restricted","China":"🔴 Restricted",
-    "Iran":"🔴 Restricted","North Korea":"🔴 Restricted",
-    "Belarus":"🔴 Restricted","Cuba":"🔴 Restricted",
-    "Syria":"🔴 Restricted","Venezuela":"🔴 Restricted",
-    "Myanmar":"🔴 Restricted",
+    "United States":"Trusted","United Kingdom":"Trusted",
+    "Germany":"Trusted","Canada":"Trusted","Australia":"Trusted",
+    "Japan":"Trusted","South Korea":"Trusted","Singapore":"Trusted",
+    "Netherlands":"Trusted","Sweden":"Trusted","France":"Trusted",
+    "Switzerland":"Trusted","Norway":"Trusted","Finland":"Trusted",
+    "Denmark":"Trusted","Ireland":"Trusted","New Zealand":"Trusted",
+    "Austria":"Trusted","Belgium":"Trusted","Luxembourg":"Trusted",
+    "Iceland":"Trusted","Taiwan":"Trusted","Israel":"Trusted",
+    # Caution — large active dev communities but variable supply-chain hygiene
+    "India":"Caution","Brazil":"Caution","Mexico":"Caution",
+    "Poland":"Caution","Ukraine":"Caution","Romania":"Caution",
+    "Czech Republic":"Caution","Spain":"Caution","Italy":"Caution",
+    "Portugal":"Caution","Turkey":"Caution","Bulgaria":"Caution",
+    "Hungary":"Caution","South Africa":"Caution","Greece":"Caution",
+    "Argentina":"Caution","Chile":"Caution","Indonesia":"Caution",
+    "Vietnam":"Caution","Malaysia":"Caution","Philippines":"Caution",
+    "Thailand":"Caution","Egypt":"Caution","Pakistan":"Caution",
+    "Bangladesh":"Caution","Nigeria":"Caution","Kenya":"Caution",
+    "Morocco":"Caution","Colombia":"Caution","Saudi Arabia":"Caution",
+    "United Arab Emirates":"Caution","Lithuania":"Caution",
+    "Latvia":"Caution","Estonia":"Caution","Slovakia":"Caution",
+    "Croatia":"Caution","Serbia":"Caution","Slovenia":"Caution",
+    "Cyprus":"Caution","Malta":"Caution","Hong Kong":"Caution",
+    # Restricted — commonly flagged in compliance / sanctions contexts
+    "Russia":"Restricted","China":"Restricted",
+    "Iran":"Restricted","North Korea":"Restricted",
+    "Belarus":"Restricted","Cuba":"Restricted",
+    "Syria":"Restricted","Venezuela":"Restricted",
+    "Myanmar":"Restricted",
 }
 
 def _country_tier(country: str) -> str:
@@ -1817,8 +1840,8 @@ def _country_tier(country: str) -> str:
     if not country or country in ("Unknown", "—", "", "❓ Unknown", "⚠️ Rate Limited"):
         return "❓ Unrated"
     if country == "🌐 Remote / Global":
-        return "🟡 Caution"
-    return _COUNTRY_TIER.get(country, "🟡 Caution")   # default unmapped = caution
+        return "Caution"
+    return _COUNTRY_TIER.get(country, "Caution")   # default unmapped = caution
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # SECURITY AUDIT MODULE
@@ -1837,9 +1860,9 @@ def _country_tier(country: str) -> str:
 # Severity ranking (higher number = worse) — used by the worst-of aggregator
 _SEV_RANK = {"pass": 0, "low": 1, "medium": 2, "high": 3, "critical": 4}
 _SEV_EMOJI = {
-    "pass":     "🟢", "low":      "🟢",
-    "medium":   "🟡", "high":     "🟠",
-    "critical": "🔴",
+    "pass":     "✓",  "low":      "✓",
+    "medium":   "⚠",  "high":     "⚠",
+    "critical": "✗",
 }
 _SEV_LABEL = {
     "pass":     "Pass",     "low":      "Low",
@@ -1974,19 +1997,19 @@ def _check_country(row, context):
     country = row.get("Country", "")
     if not country or country in ("Unknown", "—", "", "❓ Unknown"):
         return {"severity": "low",
-                "label":    "🟢 Country unverified",
+                "label":    "Country unverified",
                 "details":  "Country could not be resolved — informational only"}
     tier = _country_tier(country)
     if "Restricted" in tier:
         return {"severity": "critical",
-                "label":    f"🔴 Restricted ({country})",
+                "label":    f"Restricted ({country})",
                 "details":  f"Maintainer in restricted country {country} — sanctions / export-control concern"}
     if "Caution" in tier:
         return {"severity": "medium",
-                "label":    f"🟡 Caution ({country})",
+                "label":    f"Caution ({country})",
                 "details":  f"Maintainer in caution-tier country {country}"}
     return {"severity": "pass",
-            "label":    f"🟢 Trusted ({country})",
+            "label":    f"Trusted ({country})",
             "details":  f"Maintainer in trusted country {country}"}
 
 # ── Security Checks — JSON node ───────────────────────────────────────────────
@@ -2173,8 +2196,10 @@ def _extract_evidence(check_id: str, result: dict, row: dict) -> dict:
     if check_id == "C4":
         maint = str(row.get("Maintainer", "") or "")
         _m = re.search(r'\+\s*(\d+)', maint)
-        cnt = (1 + int(_m.group(1))) if _m else (1 if maint.strip() and maint != "—" else 0)
-        return {"maintainer_count": cnt, "downloads": row.get("Downloads", "—")}
+        cnt = (1 + int(_m.group(1))) if _m else (1 if maint.strip() and maint not in ("—", "") else 0)
+        dl_raw = row.get("Downloads", "—")
+        dl_int = _parse_download_num(dl_raw) if dl_raw not in ("—", "N/A", "", None) else None
+        return {"maintainer_count": cnt, "downloads": dl_int}
 
     if check_id == "C5":
         country  = str(row.get("Country", "—") or "—")
@@ -2193,15 +2218,63 @@ def _calc_confidence(row: dict) -> float:
     return round(filled / len(fields), 2)
 
 
+def _fix_encoding(s: str) -> str:
+    """Fix double-encoded UTF-8 strings (Mojibake).
+
+    If a string was UTF-8 bytes misread as Latin-1 (common with
+    registry API responses), re-encoding as Latin-1 gives back the
+    original bytes, and decoding as UTF-8 restores the correct text.
+    Falls back to the original string if conversion fails.
+    """
+    if not s:
+        return s
+    try:
+        return s.encode("latin-1").decode("utf-8")
+    except (UnicodeEncodeError, UnicodeDecodeError):
+        return s
+
+
+def _split_maintainer(maintainer_str: str):
+    """Split a maintainer string into (maintainer_type, maintainer_name).
+
+    Examples:
+      "Org * facebook +2"  -> ("org", "facebook")
+      "User * ken wheeler" -> ("user", "ken wheeler")
+      "someuser"           -> ("unknown", "someuser")
+
+    Returns a 2-tuple: (maintainer_type, maintainer_name)
+    maintainer_type: "org" | "user" | "unknown"
+    maintainer_name: bare name without type prefix or "+N" suffix.
+    """
+    s = _fix_encoding(str(maintainer_str or "")).strip()
+    if not s or s in ("—", ""):
+        return "unknown", ""
+
+    middle_dot = "·"  # U+00B7 MIDDLE DOT (used as separator)
+
+    if s.startswith("Org"):
+        mtype = "org"
+        name  = s.split(middle_dot, 1)[1].strip() if middle_dot in s else s[3:].strip()
+    elif s.startswith("User"):
+        mtype = "user"
+        name  = s.split(middle_dot, 1)[1].strip() if middle_dot in s else s[4:].strip()
+    else:
+        mtype = "unknown"
+        name  = s
+
+    # Strip "+N more" suffix
+    name = re.sub(r"\s*\+\d+.*$", "", name).strip()
+    return mtype, name
+
 def _build_raised_queries(audit_rows: list) -> list:
     """Build rich, structured Raised Query records for every package with ≥1 failed check.
 
     Each record contains nested library, overall_risk, checks (all 5), and metadata sections.
     audit_rows — list of dicts from the Tab-2 audit loop (must include _results, _row_data).
     """
-    import datetime
     queries = []
-    for i, row in enumerate(audit_rows, start=1):
+    seq = 0   # sequential counter — only incremented for packages that raise a query
+    for row in audit_rows:
         results  = row.get("_results", [])
         row_data = row.get("_row_data", row)   # full row dict
 
@@ -2212,16 +2285,17 @@ def _build_raised_queries(audit_rows: list) -> list:
         if not has_issue:
             continue
 
+        seq += 1   # gap-free: only counted when we actually emit a query
+
         # Worst overall severity
         worst     = max(results, key=lambda r: _SEV_RANK.get(r.get("severity", "pass"), 0))
         worst_sev = worst.get("severity", "pass")
 
-        # Overall risk score + band (emoji-free for JSON output)
+        # Overall risk score + band
         try:
             score    = _risk_score(row_data)
             band_raw = _risk_band(score)
-            # Strip leading emoji + space e.g. "🟢 Low (80)" → "Low (80)"
-            band = re.sub(r'^[^\x00-\x7F]+\s*', '', band_raw).strip()
+            band     = re.sub(r'^[^\x00-\x7F]+\s*', '', band_raw).strip()
         except Exception:
             score, band = None, "unknown"
 
@@ -2263,27 +2337,38 @@ def _build_raised_queries(audit_rows: list) -> list:
         if "Hugging" in registry: sources.append("HuggingFace")
         sources.append("NVD")
 
+        # Split maintainer string into type + name
+        raw_maint   = _fix_encoding(str(row_data.get("Maintainer", "") or ""))
+        maint_type, maint_name = _split_maintainer(raw_maint)
+
+        # Downloads as integer
+        dl_raw = row_data.get("Downloads", "—")
+        dl_int = _parse_download_num(dl_raw) if dl_raw not in ("—", "N/A", "", None) else None
+
+        # Description — fix encoding
+        description = _fix_encoding(str(row_data.get("Description", "") or "—"))
+
         queries.append({
-            "query_id": f"RQ-{i:03d}",
+            "query_id": f"RQ-{seq:03d}",
             "library": {
-                "name":        row.get("Library", "—"),
-                "registry":    row.get("Registry", "—"),
-                "version":     row.get("Version", "N/A"),
-                "description": row_data.get("Description", "—"),
-                "license":     row_data.get("License", "—"),
-                "downloads":   row_data.get("Downloads", "—"),
-                "repo":        row_data.get("Repo", "N/A"),
-                "maintainer":  row_data.get("Maintainer", "—"),
+                "name":             row.get("Library", "—"),
+                "registry":         row.get("Registry", "—"),
+                "version":          row.get("Version", "N/A"),
+                "description":      description,
+                "license":          row_data.get("License", "—"),
+                "downloads":        dl_int,
+                "repo":             row_data.get("Repo", "N/A"),
+                "maintainer_type":  maint_type,
+                "maintainer_name":  maint_name,
             },
             "overall_risk": {
-                "score":      score,
-                "band":       band,
-                "severity":   worst_sev,
-                "confidence": confidence,
+                "score":                score,
+                "band":                 band,
+                "worst_check_severity": worst_sev,
+                "confidence":           confidence,
             },
             "checks": checks_out,
             "metadata": {
-                "generated_at":   datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
                 "engine_version": "2.0.0",
                 "sources":        sources,
             },
@@ -2294,9 +2379,8 @@ def _build_raised_queries(audit_rows: list) -> list:
 def _build_supply_chain_json(audit_rows: list) -> list:
     """Same rich JSON schema as _build_raised_queries but includes ALL packages
     (pass and fail alike). Used for the Supply Chain JSON export download."""
-    import datetime
     records = []
-    for i, row in enumerate(audit_rows, start=1):
+    for row in audit_rows:
         results  = row.get("_results", [])
         row_data = row.get("_row_data", row)
 
@@ -2345,26 +2429,33 @@ def _build_supply_chain_json(audit_rows: list) -> list:
         if "Hugging" in registry: sources.append("HuggingFace")
         sources.append("NVD")
 
+        # Split maintainer + fix encoding + parse downloads as int
+        raw_maint   = _fix_encoding(str(row_data.get("Maintainer", "") or ""))
+        maint_type, maint_name = _split_maintainer(raw_maint)
+        dl_raw  = row_data.get("Downloads", "—")
+        dl_int  = _parse_download_num(dl_raw) if dl_raw not in ("—", "N/A", "", None) else None
+        desc    = _fix_encoding(str(row_data.get("Description", "") or "—"))
+
         records.append({
             "library": {
-                "name":        row.get("Library", "—"),
-                "registry":    row.get("Registry", "—"),
-                "version":     row.get("Version", "N/A"),
-                "description": row_data.get("Description", "—"),
-                "license":     row_data.get("License", "—"),
-                "downloads":   row_data.get("Downloads", "—"),
-                "repo":        row_data.get("Repo", "N/A"),
-                "maintainer":  row_data.get("Maintainer", "—"),
+                "name":            row.get("Library", "—"),
+                "registry":        row.get("Registry", "—"),
+                "version":         row.get("Version", "N/A"),
+                "description":     desc,
+                "license":         row_data.get("License", "—"),
+                "downloads":       dl_int,
+                "repo":            row_data.get("Repo", "N/A"),
+                "maintainer_type": maint_type,
+                "maintainer_name": maint_name,
             },
             "overall_risk": {
-                "score":      score,
-                "band":       band,
-                "severity":   worst_sev,
-                "confidence": confidence,
+                "score":                score,
+                "band":                 band,
+                "worst_check_severity": worst_sev,
+                "confidence":           confidence,
             },
             "checks": checks_out,
             "metadata": {
-                "generated_at":   datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
                 "engine_version": "2.0.0",
                 "sources":        sources,
             },
@@ -2475,10 +2566,10 @@ def _risk_score(row, rules=None) -> int:
 
 def _risk_band(score: int) -> str:
     """Convert a 0-100 risk score into a band emoji + label."""
-    if score >= 80: return f"🟢 Low ({score})"
-    if score >= 60: return f"🟡 Medium ({score})"
-    if score >= 40: return f"🟠 High ({score})"
-    return f"🔴 Critical ({score})"
+    if score >= 80: return f"Low ({score})"
+    if score >= 60: return f"Medium ({score})"
+    if score >= 40: return f"High ({score})"
+    return f"Critical ({score})"
 
 # ── Custom Rules / Blocklist (user-uploaded CSV/JSON) ─────────────────────────
 # Lets users define their own rules (e.g. banned packages, restricted licenses)
@@ -6377,10 +6468,10 @@ if "scan_data" in st.session_state:
             _med  = ((disp_df["Risk Score"] >= 60) & (disp_df["Risk Score"] < 80)).sum()
             _high = ((disp_df["Risk Score"] >= 40) & (disp_df["Risk Score"] < 60)).sum()
             _crit = (disp_df["Risk Score"] < 40).sum()
-            _dc1.metric("🟢 Low Risk",      f"{_low}",   f"{_low/len(disp_df)*100:.0f}%")
-            _dc2.metric("🟡 Medium Risk",   f"{_med}",   f"{_med/len(disp_df)*100:.0f}%")
-            _dc3.metric("🟠 High Risk",     f"{_high}",  f"{_high/len(disp_df)*100:.0f}%")
-            _dc4.metric("🔴 Critical Risk", f"{_crit}",  f"{_crit/len(disp_df)*100:.0f}%")
+            _dc1.metric("Low Risk",      f"{_low}",   f"{_low/len(disp_df)*100:.0f}%")
+            _dc2.metric("Medium Risk",   f"{_med}",   f"{_med/len(disp_df)*100:.0f}%")
+            _dc3.metric("High Risk",     f"{_high}",  f"{_high/len(disp_df)*100:.0f}%")
+            _dc4.metric("Critical Risk", f"{_crit}",  f"{_crit/len(disp_df)*100:.0f}%")
 
             # Secondary metric row — license + maintainer signals
             _dc5, _dc6, _dc7 = st.columns(3)
@@ -6771,24 +6862,24 @@ if "scan_data" in st.session_state:
                 )
 
                 _ac1, _ac2, _ac3, _ac4 = st.columns(4)
-                _ac1.metric("🔴 Critical", f"{int(_au_crit)}",
+                _ac1.metric("Critical", f"{int(_au_crit)}",
                             f"{_au_crit/_au_tot*100:.0f}%" if _au_tot else "0%")
-                _ac2.metric("🟠 High",     f"{int(_au_high)}",
+                _ac2.metric("High",     f"{int(_au_high)}",
                             f"{_au_high/_au_tot*100:.0f}%" if _au_tot else "0%")
-                _ac3.metric("🟡 Medium",   f"{int(_au_med)}",
+                _ac3.metric("Medium",   f"{int(_au_med)}",
                             f"{_au_med/_au_tot*100:.0f}%" if _au_tot else "0%")
-                _ac4.metric("🟢 Low/Pass", f"{int(_au_low)}",
+                _ac4.metric("Low/Pass", f"{int(_au_low)}",
                             f"{_au_low/_au_tot*100:.0f}%" if _au_tot else "0%")
 
                 # ── Severity filter ───────────────────────────────────────────
                 _sev_filter = st.selectbox(
                     "Show packages with severity ≥",
-                    options=["All", "🟡 Medium and above", "🟠 High and above",
-                             "🔴 Critical only"],
+                    options=["All", "Medium and above", "High and above",
+                             "Critical only"],
                     index=0, key="audit_sev_filter"
                 )
-                _min_rank = {"All": 0, "🟡 Medium and above": 2,
-                             "🟠 High and above": 3, "🔴 Critical only": 4}[_sev_filter]
+                _min_rank = {"All": 0, "Medium and above": 2,
+                             "High and above": 3, "Critical only": 4}[_sev_filter]
                 _filtered_audit = _audit_df_full[_audit_df_full["_agg_rank"] >= _min_rank]
 
                 if _filtered_audit.empty:
@@ -6901,19 +6992,19 @@ if "scan_data" in st.session_state:
                 st.markdown("---")
 
                 # ── Section 1: Risk Tier Breakdown ────────────────────────────
-                _trusted    = (_gdf["Country Tier"] == "🟢 Trusted").sum()
-                _caution    = (_gdf["Country Tier"] == "🟡 Caution").sum()
-                _restricted = (_gdf["Country Tier"] == "🔴 Restricted").sum()
+                _trusted    = (_gdf["Country Tier"] == "Trusted").sum()
+                _caution    = (_gdf["Country Tier"] == "Caution").sum()
+                _restricted = (_gdf["Country Tier"] == "Restricted").sum()
                 _unrated    = (_gdf["Country Tier"] == "❓ Unrated").sum()
                 _total      = len(_gdf)
 
                 st.markdown("#### Risk Tier Breakdown")
                 _t1, _t2, _t3, _t4 = st.columns(4)
-                _t1.metric("🟢 Trusted",    f"{_trusted}",
+                _t1.metric("Trusted",    f"{_trusted}",
                            f"{_trusted/_total*100:.0f}%" if _total else "0%")
-                _t2.metric("🟡 Caution",    f"{_caution}",
+                _t2.metric("Caution",    f"{_caution}",
                            f"{_caution/_total*100:.0f}%" if _total else "0%")
-                _t3.metric("🔴 Restricted", f"{_restricted}",
+                _t3.metric("Restricted", f"{_restricted}",
                            f"{_restricted/_total*100:.0f}%" if _total else "0%")
                 _t4.metric("❓ Unrated",    f"{_unrated}",
                            f"{_unrated/_total*100:.0f}%" if _total else "0%")
@@ -6927,10 +7018,10 @@ if "scan_data" in st.session_state:
                                   - (_unrated    / _total * 100 * 0.5)))
                 else:
                     _geo_score = 100
-                if _geo_score >= 90:   _geo_band = "🟢 Low geopolitical risk"
-                elif _geo_score >= 70: _geo_band = "🟡 Moderate geopolitical risk"
-                elif _geo_score >= 50: _geo_band = "🟠 High geopolitical risk"
-                else:                  _geo_band = "🔴 Critical geopolitical risk"
+                if _geo_score >= 90:   _geo_band = "Low geopolitical risk"
+                elif _geo_score >= 70: _geo_band = "Moderate geopolitical risk"
+                elif _geo_score >= 50: _geo_band = "High geopolitical risk"
+                else:                  _geo_band = "Critical geopolitical risk"
 
                 st.markdown("#### Overall Geopolitical Risk Score")
                 _g1, _g2 = st.columns([1, 2])
@@ -6941,7 +7032,7 @@ if "scan_data" in st.session_state:
                 st.markdown("---")
 
                 # ── Section 3: High-Risk Packages (Restricted-tier) ───────────
-                _restricted_rows = _gdf[_gdf["Country Tier"] == "🔴 Restricted"]
+                _restricted_rows = _gdf[_gdf["Country Tier"] == "Restricted"]
                 if not _restricted_rows.empty:
                     st.markdown(
                         f"#### 🚨 High-Risk Packages "
