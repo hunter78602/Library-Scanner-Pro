@@ -1,7 +1,25 @@
 import streamlit as st
 import re
-import requests, pandas as pd, sqlite3, json, time, datetime
+import requests, pandas as pd, json, time, datetime
+import os, pathlib
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from contextlib import contextmanager
+
+# ── psycopg2 (PostgreSQL driver) ───────────────────────────────────────────────
+try:
+    import psycopg2
+    import psycopg2.pool
+except ImportError as _pg_err:
+    raise ImportError(
+        "psycopg2 not found — install it with:  pip install psycopg2-binary"
+    ) from _pg_err
+
+# ── Load .env file if present (optional; falls back to real env vars) ──────────
+try:
+    from dotenv import load_dotenv as _load_dotenv
+    _load_dotenv()
+except ImportError:
+    pass  # python-dotenv is optional; set DATABASE_URL in your environment instead
 
 # ── Page config ────────────────────────────────────────────────────────────────
 st.set_page_config(
@@ -157,8 +175,38 @@ section[data-testid="stSidebar"] label { color:#5a89a8 !important; font-size:0.7
 
 # ── Constants ──────────────────────────────────────────────────────────────────
 SEARCH_LIMIT = 4
-DB_PATH      = "scanner_cache.db"
 TIMEOUT      = 9
+
+# ── PostgreSQL connection ───────────────────────────────────────────────────────
+# Set DATABASE_URL in your .env file or as an environment variable.
+# Local:      postgresql://postgres:postgres@localhost:5432/registry_intel
+# Production: set DATABASE_URL to your cloud provider's connection string
+DATABASE_URL = os.environ.get(
+    "DATABASE_URL",
+    "postgresql://postgres:postgres@localhost:5432/registry_intel",
+)
+
+_pg_pool: "psycopg2.pool.ThreadedConnectionPool | None" = None
+
+def _get_pg_pool() -> "psycopg2.pool.ThreadedConnectionPool":
+    global _pg_pool
+    if _pg_pool is None:
+        _pg_pool = psycopg2.pool.ThreadedConnectionPool(1, 5, dsn=DATABASE_URL)
+    return _pg_pool
+
+@contextmanager
+def _pg_conn():
+    """Yield a psycopg2 connection from the pool; commit on success, rollback on error."""
+    pool = _get_pg_pool()
+    conn = pool.getconn()
+    try:
+        yield conn
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        pool.putconn(conn)
 
 # ── HTML markdown helper ───────────────────────────────────────────────────────
 # st.markdown still runs Markdown before rendering HTML. Any line that starts
@@ -170,81 +218,160 @@ def _md(html: str) -> None:
     st.markdown(re.sub(r"(?m)^( {4,})", lambda m: " " * min(len(m.group(1)), 3), html),
                 unsafe_allow_html=True)
 
-# ── SQLite cache ───────────────────────────────────────────────────────────────
+# ── PostgreSQL cache & persistence ─────────────────────────────────────────────
 def _init_db():
-    c = sqlite3.connect(DB_PATH)
-    c.execute("CREATE TABLE IF NOT EXISTS cache (key TEXT PRIMARY KEY, data TEXT, ts REAL)")
-    # Persistent country cache — survives restarts, 24-hour TTL per username
-    # Keeps GitHub API calls near zero for repeat scans (no token needed)
-    c.execute("""CREATE TABLE IF NOT EXISTS country_cache
-                 (username TEXT PRIMARY KEY, country TEXT, ts REAL)""")
-    c.commit(); c.close()
+    """Create all application tables if they do not already exist."""
+    with _pg_conn() as conn:
+        cur = conn.cursor()
+        # Generic API-response cache (TTL-based)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS cache (
+                key  TEXT PRIMARY KEY,
+                data TEXT    NOT NULL,
+                ts   FLOAT8  NOT NULL
+            )
+        """)
+        # GitHub username → country lookup cache (24 h TTL)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS country_cache (
+                username TEXT PRIMARY KEY,
+                country  TEXT   NOT NULL,
+                ts       FLOAT8 NOT NULL
+            )
+        """)
+        # Per-package profile data (replaces profile_cache/*.json files)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS profile_cache (
+                pkg_key  TEXT PRIMARY KEY,
+                data     JSONB  NOT NULL,
+                saved_at FLOAT8 NOT NULL
+            )
+        """)
+        # Completed scan history — packages + raised queries + risk summary
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS scan_history (
+                id             SERIAL PRIMARY KEY,
+                scanned_at     TIMESTAMPTZ DEFAULT NOW(),
+                packages       JSONB,
+                raised_queries JSONB,
+                summary        JSONB
+            )
+        """)
+        cur.close()
 
-def _country_cache_get(username: str) -> str | None:
+
+def _country_cache_get(username: str) -> "str | None":
     """Return cached country for username (24-hour TTL). None if missing/expired."""
     try:
-        c = sqlite3.connect(DB_PATH)
-        r = c.execute(
-            "SELECT country, ts FROM country_cache WHERE username=?",
-            (username.lower(),)
-        ).fetchone()
-        c.close()
-        if r and (time.time() - r[1]) < 86400:   # 24 hours
+        with _pg_conn() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT country, ts FROM country_cache WHERE username=%s",
+                (username.lower(),)
+            )
+            r = cur.fetchone()
+            cur.close()
+        if r and (time.time() - r[1]) < 86400:
             return r[0]
     except Exception:
         pass
     return None
 
+
 def _country_cache_set(username: str, country: str):
-    """Persist country lookup to SQLite."""
+    """Persist country lookup to PostgreSQL."""
     try:
-        c = sqlite3.connect(DB_PATH)
-        c.execute(
-            "INSERT OR REPLACE INTO country_cache VALUES (?,?,?)",
-            (username.lower(), country, time.time())
-        )
-        c.commit(); c.close()
+        with _pg_conn() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                """INSERT INTO country_cache (username, country, ts)
+                   VALUES (%s, %s, %s)
+                   ON CONFLICT (username) DO UPDATE
+                   SET country = EXCLUDED.country, ts = EXCLUDED.ts""",
+                (username.lower(), country, time.time())
+            )
+            cur.close()
     except Exception:
         pass
 
+
 def cache_get(key, ttl=86400):
     try:
-        c = sqlite3.connect(DB_PATH)
-        r = c.execute("SELECT data,ts FROM cache WHERE key=?", (key,)).fetchone()
-        c.close()
-        if r and (time.time()-r[1]) < ttl: return json.loads(r[0])
-    except: pass
+        with _pg_conn() as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT data, ts FROM cache WHERE key=%s", (key,))
+            r = cur.fetchone()
+            cur.close()
+        if r and (time.time() - r[1]) < ttl:
+            return json.loads(r[0])
+    except Exception:
+        pass
     return None
+
 
 def cache_set(key, data):
     try:
-        c = sqlite3.connect(DB_PATH)
-        c.execute("INSERT OR REPLACE INTO cache VALUES(?,?,?)",
-                  (key, json.dumps(data), time.time()))
-        c.commit(); c.close()
-    except: pass
+        with _pg_conn() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                """INSERT INTO cache (key, data, ts) VALUES (%s, %s, %s)
+                   ON CONFLICT (key) DO UPDATE
+                   SET data = EXCLUDED.data, ts = EXCLUDED.ts""",
+                (key, json.dumps(data), time.time())
+            )
+            cur.close()
+    except Exception:
+        pass
+
 
 def cache_clear():
     try:
-        c = sqlite3.connect(DB_PATH)
-        c.execute("DELETE FROM cache"); c.commit(); c.close()
-    except: pass
+        with _pg_conn() as conn:
+            cur = conn.cursor()
+            cur.execute("DELETE FROM cache")
+            cur.close()
+    except Exception:
+        pass
+
 
 def cache_delete(key):
     try:
-        c = sqlite3.connect(DB_PATH)
-        c.execute("DELETE FROM cache WHERE key=?", (key,)); c.commit(); c.close()
-    except: pass
+        with _pg_conn() as conn:
+            cur = conn.cursor()
+            cur.execute("DELETE FROM cache WHERE key=%s", (key,))
+            cur.close()
+    except Exception:
+        pass
+
+
+def save_scan_history(audit_rows: list, raised_queries: list, summary: dict):
+    """Persist a completed scan run (packages + raised queries + summary) to PostgreSQL."""
+    try:
+        # Strip non-serialisable internal keys (prefixed with _)
+        clean_rows = [
+            {k: v for k, v in row.items() if not k.startswith("_")}
+            for row in audit_rows
+        ]
+        with _pg_conn() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                """INSERT INTO scan_history (packages, raised_queries, summary)
+                   VALUES (%s::jsonb, %s::jsonb, %s::jsonb)""",
+                (
+                    json.dumps(clean_rows,    default=str),
+                    json.dumps(raised_queries, default=str),
+                    json.dumps(summary,        default=str),
+                )
+            )
+            cur.close()
+    except Exception:
+        pass
+
 
 _init_db()
 
-# ── JSON Profile Cache (persistent, survives refresh & restart) ────────────────
-import os, pathlib
-
-_JSON_CACHE_DIR = pathlib.Path(__file__).parent / "profile_cache"
-_JSON_CACHE_DIR.mkdir(exist_ok=True)
-
-# Per-field TTLs (seconds)
+# ── Per-package profile cache (PostgreSQL — replaces profile_cache/*.json) ─────
+# Per-field TTLs (seconds) — unchanged from the file-based version
 _FIELD_TTL = {
     "contrib_intel":     7 * 86400,  # 7 days  — LinkedIn, orgs, 2FA (identity)
     "owner_prof":        7 * 86400,  # 7 days  — org/user profile
@@ -259,27 +386,48 @@ _FIELD_TTL = {
     "last_commit_date":       3600,  # 1 hour
 }
 
-def _json_cache_path(pkg_name: str, reg_name: str) -> pathlib.Path:
-    safe = (f"{pkg_name}__{reg_name}"
-            .replace("/","_").replace("\\","_").replace(":","_")
-            .replace("@","_").replace(" ","_"))
-    return _JSON_CACHE_DIR / f"{safe}.json"
+
+def _pkg_cache_key(pkg_name: str, reg_name: str) -> str:
+    """Build a stable, filesystem-safe primary key for a package + registry pair."""
+    return (f"{pkg_name}__{reg_name}"
+            .replace("/", "_").replace("\\", "_").replace(":", "_")
+            .replace("@", "_").replace(" ", "_"))
+
 
 def _load_json_cache(pkg_name: str, reg_name: str) -> dict:
-    p = _json_cache_path(pkg_name, reg_name)
+    """Load the profile cache dict for a package from PostgreSQL."""
+    key = _pkg_cache_key(pkg_name, reg_name)
     try:
-        if p.exists():
-            return json.loads(p.read_text(encoding="utf-8"))
+        with _pg_conn() as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT data FROM profile_cache WHERE pkg_key=%s", (key,))
+            r = cur.fetchone()
+            cur.close()
+        if r:
+            # psycopg2 returns JSONB columns already as Python dicts
+            return r[0] if isinstance(r[0], dict) else json.loads(r[0])
     except Exception:
         pass
     return {}
 
+
 def _save_json_cache(pkg_name: str, reg_name: str, cache: dict):
-    p = _json_cache_path(pkg_name, reg_name)
+    """Persist the profile cache dict for a package to PostgreSQL."""
+    key = _pkg_cache_key(pkg_name, reg_name)
     try:
-        p.write_text(json.dumps(cache, default=str, indent=2), encoding="utf-8")
+        with _pg_conn() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                """INSERT INTO profile_cache (pkg_key, data, saved_at)
+                   VALUES (%s, %s::jsonb, %s)
+                   ON CONFLICT (pkg_key) DO UPDATE
+                   SET data = EXCLUDED.data, saved_at = EXCLUDED.saved_at""",
+                (key, json.dumps(cache, default=str), time.time())
+            )
+            cur.close()
     except Exception:
         pass
+
 
 def _jcache_get(cache: dict, field: str):
     """Return (value, is_fresh). is_fresh=True means within TTL → skip API call."""
@@ -289,36 +437,45 @@ def _jcache_get(cache: dict, field: str):
     age = time.time() - entry.get("saved_at", 0)
     return entry.get("data"), age < _FIELD_TTL.get(field, 86400)
 
+
 def _jcache_set(cache: dict, field: str, value):
     cache[field] = {"data": value, "saved_at": time.time()}
 
+
 def _delete_json_cache(pkg_name: str, reg_name: str):
-    p = _json_cache_path(pkg_name, reg_name)
+    """Remove the profile cache entry for a package from PostgreSQL."""
+    key = _pkg_cache_key(pkg_name, reg_name)
     try:
-        if p.exists(): p.unlink()
+        with _pg_conn() as conn:
+            cur = conn.cursor()
+            cur.execute("DELETE FROM profile_cache WHERE pkg_key=%s", (key,))
+            cur.close()
     except Exception:
         pass
+
 
 # Auto-clear cache when schema changes (old rows carry "Status", new rows carry "Maintainer")
 def _migrate_cache():
     """Wipe cache rows from older schema versions."""
     try:
-        c = sqlite3.connect(DB_PATH)
-        rows = c.execute("SELECT key, data FROM cache LIMIT 30").fetchall()
-        for key, raw in rows:
-            try:
-                items  = json.loads(raw)
-                sample = items[0] if isinstance(items, list) else items
-                # Old schema: had "Status" instead of "Maintainer"
-                # OR missing the new "Last Updated" column
-                if ("Status" in sample and "Maintainer" not in sample) or \
-                   ("Last Updated" not in sample and "Library" in sample):
-                    c.execute("DELETE FROM cache")
-                    c.commit()
-                    break
-            except: pass
-        c.close()
-    except: pass
+        with _pg_conn() as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT key, data FROM cache LIMIT 30")
+            rows = cur.fetchall()
+            for key, raw in rows:
+                try:
+                    items  = json.loads(raw)
+                    sample = items[0] if isinstance(items, list) else items
+                    if ("Status" in sample and "Maintainer" not in sample) or \
+                       ("Last Updated" not in sample and "Library" in sample):
+                        cur.execute("DELETE FROM cache")
+                        break
+                except Exception:
+                    pass
+            cur.close()
+    except Exception:
+        pass
+
 
 _migrate_cache()
 
@@ -394,6 +551,31 @@ def _trunc(s, n=72):
     if not s or s == "N/A": return "—"
     s = s.strip()
     return s[:n].rstrip() + ("…" if len(s) > n else "")
+
+def _clean_for_json_export(df: "pd.DataFrame") -> str:
+    """Return a clean, human-readable JSON string from a results DataFrame.
+
+    Fixes two problems that appear in the raw pandas .to_json() output:
+      1. Unicode escapes (·, 🚨 …) — caused by force_ascii=True default.
+         Fixed by converting to Python dicts first then json.dumps(ensure_ascii=False).
+      2. Emoji prefixes in display columns (Status, Risk, License Risk, etc.).
+         Fixed by stripping any leading non-ASCII run + optional space from string values
+         in the affected columns before serialising.
+    """
+    # Columns that carry emoji prefixes in their display values
+    _EMOJI_COLS = {
+        "Status", "Risk", "License Risk",
+        "Single Maintainer", "Country Tier",
+    }
+    _strip_emoji = lambda v: re.sub(r'^[^\x00-\x7F\s]+\s*', '', str(v)).strip() if isinstance(v, str) else v
+
+    clean = df.copy()
+    for col in _EMOJI_COLS:
+        if col in clean.columns:
+            clean[col] = clean[col].apply(_strip_emoji)
+
+    records = json.loads(clean.to_json(orient="records", force_ascii=False))
+    return json.dumps(records, indent=2, ensure_ascii=False)
 
 # ── Maintainer Country Intelligence ────────────────────────────────────────────
 # Maps free-text GitHub location strings → standardised country names.
@@ -1102,6 +1284,97 @@ def _extract_gh_username(maintainer: str) -> str:
 
     return re.sub(r"[^a-zA-Z0-9\-]", "", uname)
 
+# ── Package-name → canonical GitHub org map ──────────────────────────────────
+# For widely-known packages where the registry (especially NuGet/Packagist)
+# doesn't link to the upstream GitHub repo AND the maintainer is a person's
+# display name (blocked by safety guard), this map provides the canonical
+# GitHub org so the country lookup can resolve. Used as a fallback layer.
+_PACKAGE_TO_GH_ORG: dict[str, str] = {
+    # jQuery family
+    "jquery":"jquery", "jqueryui":"jquery", "jquerymigrate":"jquery",
+    "jqueryuicombined":"jquery", "jquerytouchpunch":"jquery",
+    "jqueryuirails":"jquery", "jquerymigraterails":"jquery",
+    # Bootstrap & related
+    "bootstrap":"twbs", "modernizr":"Modernizr",
+    # Date/time
+    "momentjs":"moment", "moment":"moment",
+    "datefns":"date-fns", "dayjs":"iamkun",
+    # Underscore/Backbone (Jeremy Ashkenas)
+    "underscorejs":"jashkenas", "underscore":"jashkenas",
+    "backbonejs":"jashkenas", "backbone":"jashkenas",
+    # Charts / data viz
+    "chartjs":"chartjs", "d3":"d3", "d3js":"d3", "threejs":"mrdoob",
+    # Editors
+    "ckeditor":"ckeditor", "ckeditor4":"ckeditor", "ckeditor5":"ckeditor",
+    "froalaeditor":"froala-labs", "froala":"froala-labs",
+    "froalaeditorsdk":"froala-labs", "tinymce":"tinymce",
+    "codemirror":"codemirror", "quill":"slab", "quilljs":"slab",
+    "monacoeditor":"microsoft", "monaco":"microsoft",
+    # UI components / carousels / lightboxes
+    "dropzone":"dropzone", "fancybox":"fancyapps", "lightbox":"lokeshdhakar",
+    "lightbox2":"lokeshdhakar",
+    "select2":"select2", "slick":"kenwheeler", "swiper":"nolimits4web",
+    "splide":"Splidejs", "splidejs":"Splidejs",
+    "aos":"michalsnik", "lazysizes":"aFarkas",
+    "clipboardjs":"zenorocha", "clipboard":"zenorocha",
+    "hammerjs":"hammerjs", "hammer":"hammerjs",
+    "fullcalendar":"fullcalendar",
+    "datatables":"DataTables", "datatablesnet":"DataTables",
+    "pdfjs":"mozilla", "pdfjsdist":"mozilla",
+    # Notifications
+    "toastr":"CodeSeven", "sweetalert":"sweetalert2", "sweetalert2":"sweetalert2",
+    # CSS / animation / icons
+    "animatecss":"animate-css", "animate":"animate-css",
+    "gsap":"greensock",
+    "popper":"popperjs", "popperjs":"popperjs", "floatingui":"floating-ui",
+    "lottiefiles":"LottieFiles", "lottie":"LottieFiles", "lottieweb":"airbnb",
+    "lucide":"lucide-icons", "lucideicons":"lucide-icons",
+    "fontawesome":"FortAwesome", "feathericons":"feathericons",
+    # Modern JS frameworks/libs
+    "react":"facebook", "reactdom":"facebook", "reactnative":"facebook",
+    "vue":"vuejs", "vuejs":"vuejs",
+    "angular":"angular", "angularjs":"angular",
+    "svelte":"sveltejs", "sveltejs":"sveltejs",
+    "ember":"emberjs", "emberjs":"emberjs",
+    "preact":"preactjs", "preactjs":"preactjs",
+    "solid":"solidjs", "solidjs":"solidjs",
+    "alpine":"alpinejs", "alpinejs":"alpinejs",
+    # CSS frameworks
+    "tailwindcss":"tailwindlabs", "tailwind":"tailwindlabs",
+    "bulma":"jgthms", "foundation":"foundation",
+    # CSS-in-JS / styling
+    "styledcomponents":"styled-components", "emotion":"emotion-js",
+    # UI kits
+    "materialui":"mui", "mui":"mui",
+    "antdesign":"ant-design", "antd":"ant-design",
+    "chakraui":"chakra-ui", "chakra":"chakra-ui",
+    "radixui":"radix-ui", "elementui":"ElemeFE", "elementplus":"element-plus",
+    "framermotion":"framer",
+    # Older / legacy
+    "prototype":"prototypejs", "prototypejs":"prototypejs",
+    "zepto":"madrobby", "zeptojs":"madrobby",
+    "knockoutjs":"knockout", "knockout":"knockout",
+    "scriptaculous":"madrobby", "mootools":"mootools",
+    # Markdown
+    "marked":"markedjs", "markdownit":"markdown-it", "showdown":"showdownjs",
+    # Other popular
+    "lodash":"lodash", "axios":"axios",
+    "socketio":"socketio", "socketioparser":"socketio",
+    "closurelibrary":"google", "googleclosurelibrary":"google",
+    "corejs":"zloirock",
+    "expressjs":"expressjs", "express":"expressjs",
+    "nextjs":"vercel", "next":"vercel",
+    "nuxt":"nuxt", "nuxtjs":"nuxt",
+    "gatsby":"gatsbyjs", "gatsbyjs":"gatsbyjs",
+    "prism":"PrismJS", "prismjs":"PrismJS",
+    "litelement":"lit", "lithtml":"lit", "lit":"lit",
+    "zonejs":"angular", "zone":"angular",
+}
+
+def _normalize_pkg_name(s: str) -> str:
+    """Strip separators + lowercase for package-name lookup."""
+    return re.sub(r'[\s._\-/:@]', '', str(s or "").lower())
+
 def _enrich_countries(df, github_token: str = "") -> "pd.DataFrame":
     """
     Add a 'Country' column to the results dataframe — PARALLEL implementation.
@@ -1126,12 +1399,16 @@ def _enrich_countries(df, github_token: str = "") -> "pd.DataFrame":
     # ── Pass 1: extract candidates for every row ──────────────────────────
     candidates = []
     for _, row in df.iterrows():
-        gh_owner = (row.get("_gh_owner") or "").strip()
-        uname    = _extract_gh_username(row.get("Maintainer", "") or "")
+        lib       = row.get("Library", "") or ""
+        gh_owner  = (row.get("_gh_owner") or "").strip()
+        uname     = _extract_gh_username(row.get("Maintainer", "") or "")
+        # Package-name canonical lookup — well-known packages with no upstream link
+        pkg_org   = _PACKAGE_TO_GH_ORG.get(_normalize_pkg_name(lib), "")
         candidates.append({
-            "lib":      row.get("Library", "") or "",
+            "lib":      lib,
             "gh_owner": gh_owner,
             "uname":    uname,
+            "pkg_org":  pkg_org,
         })
 
     # ── Pass 2: collect unique names that need a GitHub API lookup ────────
@@ -1141,6 +1418,8 @@ def _enrich_countries(df, github_token: str = "") -> "pd.DataFrame":
             unique_names.add(c["gh_owner"])
         if c["uname"]:
             unique_names.add(c["uname"])
+        if c["pkg_org"]:
+            unique_names.add(c["pkg_org"])
 
     # ── Pass 3: parallel fetch every unique name (8 workers) ──────────────
     name_to_country: dict[str, str] = {}
@@ -1156,6 +1435,11 @@ def _enrich_countries(df, github_token: str = "") -> "pd.DataFrame":
                     name_to_country[_name] = "Unknown"
 
     # ── Pass 4: stitch per-row country + collect repo-search candidates ───
+    # Resolution order per row:
+    #   1. _gh_owner       (from adapter — most accurate when available)
+    #   2. uname           (extracted from Maintainer text)
+    #   3. pkg_org         (well-known package → canonical GitHub org map)
+    #   4. repo search     (queued for parallel fallback below)
     countries          = []
     repo_search_queue  = []   # (row_index, library_name)
     _BAD = {"Unknown", "⚠️ Rate Limited", "", None}
@@ -1165,6 +1449,8 @@ def _enrich_countries(df, github_token: str = "") -> "pd.DataFrame":
             country = name_to_country.get(c["gh_owner"], "Unknown")
         if country in _BAD and c["uname"]:
             country = name_to_country.get(c["uname"], "Unknown")
+        if country in _BAD and c["pkg_org"]:
+            country = name_to_country.get(c["pkg_org"], "Unknown")
         if country in _BAD and c["lib"] and len(c["lib"]) >= 3:
             # Mark for repo-search fallback (parallel below)
             repo_search_queue.append((i, c["lib"]))
@@ -1319,10 +1605,62 @@ def _fmt_dl(n):
     return str(n)
 
 def _lic(val):
-    if not val or val in ("—","N/A",""): return "—"
-    val = str(val).strip()
-    if val.startswith("http"): val = val.rstrip("/").split("/")[-1]
-    return val or "—"
+    """
+    Normalise a license value (string OR URL) into a clean SPDX-style identifier.
+
+    Handles common garbage like:
+      "LICENSE" / "license" / "LICENSE.txt"  (just the filename of a license file)
+      "mit-license.php"                      (legacy opensource.org filenames)
+      "https://github.com/foo/bar/blob/main/LICENSE"  (URLs to license files)
+      "https://opensource.org/licenses/MIT"  (canonical SPDX URLs)
+      "https://www.apache.org/licenses/LICENSE-2.0"
+    All of these should resolve to a clean SPDX identifier.
+    """
+    if not val or str(val).strip() in ("—", "N/A", ""):
+        return "—"
+    raw = str(val).strip()
+
+    # Reject pure noise tokens — license filenames, not licenses
+    _NOISE = {"license", "license.txt", "license.md", "license.html",
+              "licence", "licence.txt", "copying", "copyright", "notice",
+              "license.rst"}
+    if raw.lower() in _NOISE:
+        return "—"
+
+    # Map common license-related URL fragments / filenames to SPDX
+    _PATTERNS = [
+        # (substring needle to look for in lowercase, SPDX result)
+        ("apache-2.0", "Apache-2.0"), ("apache2.0", "Apache-2.0"),
+        ("apache-license-2", "Apache-2.0"), ("licenses/license-2.0", "Apache-2.0"),
+        ("apache 2.0", "Apache-2.0"),
+        ("gpl-3.0", "GPL-3.0"), ("gpl-2.0", "GPL-2.0"),
+        ("gplv3", "GPL-3.0"), ("gplv2", "GPL-2.0"),
+        ("agpl-3.0", "AGPL-3.0"), ("agpl", "AGPL-3.0"),
+        ("lgpl-2.1", "LGPL-2.1"), ("lgpl-3.0", "LGPL-3.0"), ("lgpl", "LGPL"),
+        ("mit-license", "MIT"), ("licenses/mit", "MIT"), ("/mit", "MIT"),
+        ("bsd-3-clause", "BSD-3-Clause"), ("bsd-2-clause", "BSD-2-Clause"),
+        ("bsd 3-clause", "BSD-3-Clause"), ("bsd 2-clause", "BSD-2-Clause"),
+        ("bsd-3", "BSD-3-Clause"), ("bsd-2", "BSD-2-Clause"),
+        ("mpl-2.0", "MPL-2.0"), ("mpl 2.0", "MPL-2.0"),
+        ("isc-license", "ISC"), ("/isc", "ISC"),
+        ("unlicense", "Unlicense"), ("cc0-1.0", "CC0-1.0"), ("cc-by", "CC-BY"),
+        ("epl-2.0", "EPL-2.0"), ("epl-1.0", "EPL-1.0"),
+        ("zlib", "Zlib"), ("wtfpl", "WTFPL"), ("artistic", "Artistic"),
+    ]
+    lower = raw.lower()
+    for needle, spdx in _PATTERNS:
+        if needle in lower:
+            return spdx
+
+    # If it's a URL but didn't match a known pattern → unparseable
+    if raw.startswith("http"):
+        # Last-resort: take last path segment, but reject if it's just a filename
+        tail = raw.rstrip("/").split("/")[-1].split("?")[0]
+        if tail.lower() in _NOISE or "." in tail.lower():
+            return "—"   # don't show "LICENSE" or "LICENSE.txt"
+        return tail or "—"
+
+    return raw or "—"
 
 def _clean_repo_url(url):
     """
@@ -1403,6 +1741,863 @@ def _pkg_status(last_updated: str) -> str:
             return "🚨 Abandoned"
     except Exception:
         return "❓ Unknown"
+
+# ── Risk Classification (Phase 2 Security Suite) ───────────────────────────────
+# License risk tiers — based on common compliance / supply-chain practice.
+_LICENSE_SAFE = {
+    "mit", "apache-2.0", "apache 2.0", "apache2", "apache",
+    "bsd-3-clause", "bsd-2-clause", "bsd", "0bsd", "isc",
+    "unlicense", "cc0-1.0", "cc0", "public domain", "wtfpl",
+    "zlib", "x11", "boost",
+}
+_LICENSE_COPYLEFT = {
+    "gpl-3.0", "gpl-2.0", "gpl-2", "gpl-3", "gpl", "gnu general public",
+    "agpl-3.0", "agpl", "lgpl-2.1", "lgpl-3.0", "lgpl",
+    "mpl-2.0", "mpl-1.1", "mpl",
+    "epl-2.0", "epl-1.0", "epl", "cddl",
+}
+
+def _license_risk(license_str: str) -> str:
+    """
+    Classify a license string into one of:
+      ✅ Safe       — MIT / Apache / BSD / ISC / Unlicense (permissive)
+      ⚠️ Copyleft   — GPL / AGPL / LGPL / MPL (viral or weak-viral)
+      ❌ Missing    — no license declared (legal grey area)
+      ⚪ Other      — proprietary, custom, or unrecognised
+    """
+    if not license_str or str(license_str).strip() in ("—", "N/A", "", "license", "LICENSE"):
+        return "❌ Missing"
+    l = str(license_str).lower().strip()
+    # Strip common noise tokens
+    l = re.sub(r"\s+", " ", l)
+    for safe in _LICENSE_SAFE:
+        if safe in l:
+            return "✅ Safe"
+    for copyleft in _LICENSE_COPYLEFT:
+        if copyleft in l:
+            return "⚠️ Copyleft"
+    return "⚪ Other"
+
+# Country risk tiers — conservative defaults; user can adjust as needed.
+_COUNTRY_TIER: dict[str, str] = {
+    # 🟢 Trusted — Western democracies + strong tech-allied nations
+    "United States":"🟢 Trusted","United Kingdom":"🟢 Trusted",
+    "Germany":"🟢 Trusted","Canada":"🟢 Trusted","Australia":"🟢 Trusted",
+    "Japan":"🟢 Trusted","South Korea":"🟢 Trusted","Singapore":"🟢 Trusted",
+    "Netherlands":"🟢 Trusted","Sweden":"🟢 Trusted","France":"🟢 Trusted",
+    "Switzerland":"🟢 Trusted","Norway":"🟢 Trusted","Finland":"🟢 Trusted",
+    "Denmark":"🟢 Trusted","Ireland":"🟢 Trusted","New Zealand":"🟢 Trusted",
+    "Austria":"🟢 Trusted","Belgium":"🟢 Trusted","Luxembourg":"🟢 Trusted",
+    "Iceland":"🟢 Trusted","Taiwan":"🟢 Trusted","Israel":"🟢 Trusted",
+    # 🟡 Caution — large active dev communities but variable supply-chain hygiene
+    "India":"🟡 Caution","Brazil":"🟡 Caution","Mexico":"🟡 Caution",
+    "Poland":"🟡 Caution","Ukraine":"🟡 Caution","Romania":"🟡 Caution",
+    "Czech Republic":"🟡 Caution","Spain":"🟡 Caution","Italy":"🟡 Caution",
+    "Portugal":"🟡 Caution","Turkey":"🟡 Caution","Bulgaria":"🟡 Caution",
+    "Hungary":"🟡 Caution","South Africa":"🟡 Caution","Greece":"🟡 Caution",
+    "Argentina":"🟡 Caution","Chile":"🟡 Caution","Indonesia":"🟡 Caution",
+    "Vietnam":"🟡 Caution","Malaysia":"🟡 Caution","Philippines":"🟡 Caution",
+    "Thailand":"🟡 Caution","Egypt":"🟡 Caution","Pakistan":"🟡 Caution",
+    "Bangladesh":"🟡 Caution","Nigeria":"🟡 Caution","Kenya":"🟡 Caution",
+    "Morocco":"🟡 Caution","Colombia":"🟡 Caution","Saudi Arabia":"🟡 Caution",
+    "United Arab Emirates":"🟡 Caution","Lithuania":"🟡 Caution",
+    "Latvia":"🟡 Caution","Estonia":"🟡 Caution","Slovakia":"🟡 Caution",
+    "Croatia":"🟡 Caution","Serbia":"🟡 Caution","Slovenia":"🟡 Caution",
+    "Cyprus":"🟡 Caution","Malta":"🟡 Caution","Hong Kong":"🟡 Caution",
+    # 🔴 Restricted — commonly flagged in compliance / sanctions contexts
+    "Russia":"🔴 Restricted","China":"🔴 Restricted",
+    "Iran":"🔴 Restricted","North Korea":"🔴 Restricted",
+    "Belarus":"🔴 Restricted","Cuba":"🔴 Restricted",
+    "Syria":"🔴 Restricted","Venezuela":"🔴 Restricted",
+    "Myanmar":"🔴 Restricted",
+}
+
+def _country_tier(country: str) -> str:
+    """Map a country name to its risk tier (or empty if unknown)."""
+    if not country or country in ("Unknown", "—", "", "❓ Unknown", "⚠️ Rate Limited"):
+        return "❓ Unrated"
+    if country == "🌐 Remote / Global":
+        return "🟡 Caution"
+    return _COUNTRY_TIER.get(country, "🟡 Caution")   # default unmapped = caution
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SECURITY AUDIT MODULE
+# ═══════════════════════════════════════════════════════════════════════════════
+# Self-contained, extensible per-library security check system.
+#
+# To add a new check (e.g. Check 6: SBOM signing verification):
+#   1. Write a function `_check_<name>(row, context) -> dict` returning:
+#        {"severity": "critical"|"high"|"medium"|"low"|"pass",
+#         "label":    "🔴 Critical: short reason",
+#         "details":  "longer human-readable explanation"}
+#   2. Add an entry to _SECURITY_CHECKS below.
+# That's it — UI auto-renders the new check as a new column.
+# ───────────────────────────────────────────────────────────────────────────────
+
+# Severity ranking (higher number = worse) — used by the worst-of aggregator
+_SEV_RANK = {"pass": 0, "low": 1, "medium": 2, "high": 3, "critical": 4}
+_SEV_EMOJI = {
+    "pass":     "🟢", "low":      "🟢",
+    "medium":   "🟡", "high":     "🟠",
+    "critical": "🔴",
+}
+_SEV_LABEL = {
+    "pass":     "Pass",     "low":      "Low",
+    "medium":   "Medium",   "high":     "High",
+    "critical": "Critical",
+}
+
+# ─── Check 1 — Suspicious New Maintainer Account ─────────────────────────────
+def _check_account_age(row, context):
+    """
+    Looks up the primary maintainer's GitHub account age. New accounts =
+    typosquatting / supply-chain compromise red flag (event-stream 2018,
+    XZ Utils 2024). Lazy lookup with session caching to avoid extra API calls.
+    """
+    token = (context or {}).get("token", "")
+    gh_owner = (row.get("_gh_owner") or "").strip()
+    if not gh_owner:
+        gh_owner = _extract_gh_username(row.get("Maintainer", "") or "")
+    if not gh_owner:
+        return {"severity": "low",
+                "label":    "🟢 No maintainer to verify",
+                "details":  "Maintainer field empty — cannot fetch account age"}
+
+    # Cache key in session_state so multiple checks share lookups
+    cache = st.session_state.setdefault("_account_age_cache", {})
+    if gh_owner in cache:
+        info = cache[gh_owner]
+    else:
+        info = {"created_at": None}
+        try:
+            headers = {"User-Agent": "RegistryIntelligencePlatform/1.0",
+                       "Accept":     "application/vnd.github+json"}
+            if token:
+                headers["Authorization"] = f"Bearer {token}"
+            r = requests.get(f"https://api.github.com/users/{gh_owner}",
+                             headers=headers, timeout=8)
+            if r.status_code == 200:
+                info["created_at"] = r.json().get("created_at")
+        except Exception:
+            pass
+        cache[gh_owner] = info
+
+    age = _account_age(info.get("created_at") or "")
+    days = age.get("days")
+    if days is None:
+        return {"severity": "low",
+                "label":    "🟢 Age unknown",
+                "details":  f"Could not fetch account age for {gh_owner}"}
+    if days < 30:
+        return {"severity": "critical",
+                "label":    f"🔴 Account only {days}d old",
+                "details":  f"GitHub account {gh_owner} is less than 30 days old — high risk of namespace squat / hijack"}
+    if days < 180:
+        return {"severity": "high",
+                "label":    f"🟠 New account ({days}d)",
+                "details":  f"GitHub account {gh_owner} is less than 6 months old"}
+    if days < 730:
+        return {"severity": "medium",
+                "label":    f"🟡 Account {round(days/365,1)}y old",
+                "details":  f"GitHub account {gh_owner} is between 6m and 2y old"}
+    return {"severity": "pass",
+            "label":    f"🟢 {round(days/365,1)}y old",
+            "details":  f"GitHub account {gh_owner} is mature ({days} days old)"}
+
+# ─── Check 2 — Abandoned Package ─────────────────────────────────────────────
+def _check_abandoned(row, context):
+    """Wraps _pkg_status into a structured CheckResult."""
+    status = row.get("Status", "") or _pkg_status(row.get("Last Updated", ""))
+    if "Abandoned" in status:
+        return {"severity": "critical",
+                "label":    "🔴 Abandoned (2y+ stale)",
+                "details":  f"Last updated {row.get('Last Updated','—')} — no maintenance in over 2 years"}
+    if "Aging" in status:
+        return {"severity": "medium",
+                "label":    "🟡 Aging (6m–2y)",
+                "details":  f"Last updated {row.get('Last Updated','—')} — slowing maintenance"}
+    if "Unknown" in status:
+        return {"severity": "low",
+                "label":    "🟢 Status unknown",
+                "details":  "Registry did not provide a last-updated date"}
+    return {"severity": "pass",
+            "label":    "🟢 Active",
+            "details":  f"Last updated {row.get('Last Updated','—')} — within 6 months"}
+
+# ─── Check 3 — Known CVE ─────────────────────────────────────────────────────
+def _check_cve(row, context):
+    """
+    Parses the CVEs column. If any CVE present → High severity.
+    (CVSS escalation could be added later — would require an extra OSV call
+    per package for detailed scoring.)
+    """
+    cves = str(row.get("CVEs", "") or "")
+    if cves in ("None", "—", "", "Timeout", "Error"):
+        return {"severity": "pass",
+                "label":    "🟢 No known CVEs",
+                "details":  "OSV.dev + GitHub Advisory DB returned no vulnerabilities"}
+    # Count CVE IDs (typically comma-separated)
+    cve_count = sum(1 for c in cves.split(",") if c.strip().startswith(("CVE", "GHSA")))
+    if cve_count >= 3:
+        return {"severity": "critical",
+                "label":    f"🔴 {cve_count}+ CVEs",
+                "details":  f"Multiple known vulnerabilities: {cves[:120]}"}
+    return {"severity": "high",
+            "label":    f"🟠 CVE found",
+            "details":  f"Known vulnerability: {cves[:120]}"}
+
+# ─── Check 4 — Bus Factor ────────────────────────────────────────────────────
+def _check_bus_factor(row, context):
+    """≤5 maintainers + high downloads = supply-chain single point of failure."""
+    sm = row.get("Single Maintainer", "") or _single_maintainer_risk(
+        row.get("Maintainer", ""), row.get("Downloads", ""))
+    downloads = _parse_download_num(row.get("Downloads", ""))
+    if "Bus Factor" in sm:
+        if downloads >= 10_000_000:
+            return {"severity": "critical",
+                    "label":    "🔴 Bus Factor: ≤5 maint + 10M+ dl",
+                    "details":  f"≤5 maintainers for a package with {row.get('Downloads','')} downloads — left-pad/event-stream risk"}
+        return {"severity": "high",
+                "label":    "🟠 Bus Factor (≤5 maintainers)",
+                "details":  f"≤5 maintainers + {row.get('Downloads','')} downloads"}
+    if "Solo" in sm:
+        return {"severity": "medium",
+                "label":    "🟡 Small team (moderate dl)",
+                "details":  f"≤5 maintainers with {row.get('Downloads','')} downloads"}
+    return {"severity": "pass",
+            "label":    "🟢 Healthy maintainer count",
+            "details":  "More than 5 maintainers with publish rights"}
+
+# ─── Check 5 — Restricted Geographic Origin ──────────────────────────────────
+def _check_country(row, context):
+    """Maps the maintainer's country to the org's risk tier."""
+    country = row.get("Country", "")
+    if not country or country in ("Unknown", "—", "", "❓ Unknown"):
+        return {"severity": "low",
+                "label":    "🟢 Country unverified",
+                "details":  "Country could not be resolved — informational only"}
+    tier = _country_tier(country)
+    if "Restricted" in tier:
+        return {"severity": "critical",
+                "label":    f"🔴 Restricted ({country})",
+                "details":  f"Maintainer in restricted country {country} — sanctions / export-control concern"}
+    if "Caution" in tier:
+        return {"severity": "medium",
+                "label":    f"🟡 Caution ({country})",
+                "details":  f"Maintainer in caution-tier country {country}"}
+    return {"severity": "pass",
+            "label":    f"🟢 Trusted ({country})",
+            "details":  f"Maintainer in trusted country {country}"}
+
+# ── Security Checks — JSON node ───────────────────────────────────────────────
+# Each check is a self-contained, JSON-serialisable record (no Python function
+# refs here). To add a new check:
+#   1. Append a new dict entry to _SECURITY_CHECKS_JSON below
+#   2. Write   def _check_<name>(row, context) -> dict:   anywhere in this file
+#   3. Add one line   "C6": _check_<name>   to _CHECK_FN_MAP
+# The UI, audit loop, and Raised Queries auto-pick it up — no other changes needed.
+_SECURITY_CHECKS_JSON = [
+    {
+        "id":          "C1",
+        "json_id":     "MAINTAINER_ACCOUNT_AGE",
+        "category":    "maintainer",
+        "name":        "Maintainer Account Age",
+        "description": "Flags packages whose primary GitHub maintainer account is "
+                       "suspiciously new — a common vector for typosquatting and "
+                       "supply-chain hijacks (e.g. event-stream 2018, XZ Utils 2024).",
+        "enabled":     True,
+        "severity_thresholds": {
+            "critical": {"days_lt": 30,  "label": "Account only {days}d old",
+                         "details": "GitHub account {handle} is less than 30 days old — high risk of namespace squat / hijack"},
+            "high":     {"days_lt": 180, "label": "New account ({days}d)",
+                         "details": "GitHub account {handle} is less than 6 months old"},
+            "medium":   {"days_lt": 730, "label": "Account {years}y old",
+                         "details": "GitHub account {handle} is between 6 months and 2 years old"},
+            "pass":     {"label": "{years}y old",
+                         "details": "GitHub account {handle} is mature ({days} days old)"},
+        },
+    },
+    {
+        "id":          "C2",
+        "json_id":     "PACKAGE_ACTIVITY",
+        "category":    "maintenance",
+        "name":        "Abandoned Package",
+        "description": "Flags packages with no published updates in 6 months (aging) "
+                       "or 2+ years (abandoned). Stale packages receive no security patches.",
+        "enabled":     True,
+        "severity_thresholds": {
+            "critical": {"status": "Abandoned", "label": "Abandoned (2y+ stale)",
+                         "details": "No maintenance in over 2 years"},
+            "medium":   {"status": "Aging",     "label": "Aging (6m–2y)",
+                         "details": "Slowing maintenance"},
+            "low":      {"status": "Unknown",   "label": "Status unknown",
+                         "details": "Registry did not provide a last-updated date"},
+            "pass":     {"label": "Active",
+                         "details": "Updated within the last 6 months"},
+        },
+    },
+    {
+        "id":          "C3",
+        "json_id":     "KNOWN_CVE",
+        "category":    "vulnerability",
+        "name":        "Known CVE",
+        "description": "Flags packages with registered CVE or GHSA advisories sourced "
+                       "from OSV.dev, GitHub Advisory DB, and NVD.",
+        "enabled":     True,
+        "severity_thresholds": {
+            "critical": {"cve_count_gte": 3, "label": "{count}+ CVEs",
+                         "details": "Multiple known vulnerabilities: {cves}"},
+            "high":     {"cve_count_gte": 1, "label": "CVE found",
+                         "details": "Known vulnerability: {cves}"},
+            "pass":     {"label": "No known CVEs",
+                         "details": "OSV.dev + GitHub Advisory DB returned no vulnerabilities"},
+        },
+    },
+    {
+        "id":          "C4",
+        "json_id":     "BUS_FACTOR",
+        "category":    "ownership",
+        "name":        "Bus Factor",
+        "description": "Flags packages with ≤5 maintainers and high download counts — "
+                       "a supply-chain single point of failure (left-pad, event-stream pattern).",
+        "enabled":     True,
+        "severity_thresholds": {
+            "critical": {"condition": "bus_factor_and_downloads_gte_10m",
+                         "label": "Bus Factor: ≤5 maint + 10M+ dl",
+                         "details": "≤5 maintainers for a package with {downloads} downloads"},
+            "high":     {"condition": "bus_factor",
+                         "label": "Bus Factor (≤5 maintainers)",
+                         "details": "≤5 maintainers + {downloads} downloads"},
+            "medium":   {"condition": "small_team",
+                         "label": "Small team (moderate dl)",
+                         "details": "≤5 maintainers with {downloads} downloads"},
+            "pass":     {"label": "Healthy maintainer count",
+                         "details": "More than 5 maintainers with publish rights"},
+        },
+    },
+    {
+        "id":          "C5",
+        "json_id":     "RESTRICTED_ORIGIN",
+        "category":    "geopolitical",
+        "name":        "Restricted Origin",
+        "description": "Flags packages whose primary maintainer is located in a country "
+                       "classified as Restricted or Caution based on sanctions and "
+                       "export-control frameworks.",
+        "enabled":     True,
+        "severity_thresholds": {
+            "critical": {"tier": "Restricted", "label": "Restricted ({country})",
+                         "details": "Maintainer in restricted country {country} — sanctions / export-control concern"},
+            "medium":   {"tier": "Caution",    "label": "Caution ({country})",
+                         "details": "Maintainer in caution-tier country {country}"},
+            "low":      {"tier": "Unknown",    "label": "Country unverified",
+                         "details": "Country could not be resolved — informational only"},
+            "pass":     {"label": "Trusted ({country})",
+                         "details": "Maintainer in trusted country {country}"},
+        },
+    },
+]
+
+# ── Check function map — one line per check ────────────────────────────────────
+# Only bridge between the JSON node above and the Python logic below.
+# Add  "C6": _check_mycheck  here when you add a new check.
+_CHECK_FN_MAP: dict = {
+    "C1": _check_account_age,
+    "C2": _check_abandoned,
+    "C3": _check_cve,
+    "C4": _check_bus_factor,
+    "C5": _check_country,
+}
+
+# ── Rebuild _SECURITY_CHECKS for backward-compat with all existing references ──
+# All callers use c["id"], c["name"], c["fn"] — structure is unchanged.
+# Disabled checks (enabled=False) are automatically excluded.
+_SECURITY_CHECKS = [
+    {**chk, "fn": _CHECK_FN_MAP[chk["id"]]}
+    for chk in _SECURITY_CHECKS_JSON
+    if chk.get("enabled", True) and chk["id"] in _CHECK_FN_MAP
+]
+
+def _run_security_checks(row, token=""):
+    """Run every registered check on a row. Returns list of {id, name, ...result}."""
+    ctx = {"token": token}
+    out = []
+    for chk in _SECURITY_CHECKS:
+        try:
+            r = chk["fn"](row, ctx)
+        except Exception as _e:
+            r = {"severity": "low",
+                 "label":    "🟢 Check error",
+                 "details":  f"{type(_e).__name__}: {_e}"}
+        out.append({"id": chk["id"], "name": chk["name"], **r})
+    return out
+
+# ── Per-check lookup map and weights ──────────────────────────────────────────
+_CHECK_META   = {chk["id"]: chk for chk in _SECURITY_CHECKS_JSON}
+# Max risk contribution per check (mirrors _risk_score() dimension weights)
+_CHECK_WEIGHT = {"C1": 10, "C2": 30, "C3": 25, "C4": 15, "C5": 20}
+# Severity → human status label
+_SEV_TO_STATUS = {
+    "pass": "pass", "low": "pass",
+    "medium": "warning", "high": "fail", "critical": "fail",
+}
+# Severity → fraction of check weight applied as risk_score
+_SEV_FRAC = {"pass": 0.0, "low": 0.0, "medium": 0.5, "high": 0.8, "critical": 1.0}
+
+
+def _extract_evidence(check_id: str, result: dict, row: dict) -> dict:
+    """Build a structured evidence dict from row data for a given check ID."""
+    label = result.get("label", "")
+
+    if check_id == "C1":
+        m = re.search(r'(\d+\.?\d*)y', label)
+        return {"account_age_years": float(m.group(1)) if m else None}
+
+    if check_id == "C2":
+        lu = str(row.get("Last Updated", "—") or "—")
+        months = None
+        try:
+            import datetime as _dt
+            dt = _dt.datetime.strptime(lu[:7], "%Y-%m")
+            months = int((_dt.datetime.utcnow() - dt).days / 30)
+        except Exception:
+            pass
+        return {"last_updated": lu, "months_since_update": months}
+
+    if check_id == "C3":
+        raw = str(row.get("CVEs", "") or "")
+        if raw in ("None", "—", "", "Timeout", "Error"):
+            return {"cve_count": 0, "cves": []}
+        lst = [c.strip() for c in raw.split(",") if c.strip().startswith(("CVE", "GHSA"))]
+        return {"cve_count": len(lst), "cves": lst[:10]}
+
+    if check_id == "C4":
+        maint = str(row.get("Maintainer", "") or "")
+        _m = re.search(r'\+\s*(\d+)', maint)
+        cnt = (1 + int(_m.group(1))) if _m else (1 if maint.strip() and maint != "—" else 0)
+        return {"maintainer_count": cnt, "downloads": row.get("Downloads", "—")}
+
+    if check_id == "C5":
+        country  = str(row.get("Country", "—") or "—")
+        tier_raw = row.get("Country Tier", "") or _country_tier(country)
+        tier     = tier_raw.split(" ", 1)[-1].split("(")[0].strip() if tier_raw else "Unknown"
+        return {"country": country, "tier": tier}
+
+    return {}
+
+
+def _calc_confidence(row: dict) -> float:
+    """Confidence 0–1: fraction of key data fields that are populated."""
+    fields = ["CVEs", "Country", "Maintainer", "Last Updated", "License", "Repo"]
+    blanks = {"—", "N/A", "", None, "Unknown", "❓ Unknown"}
+    filled = sum(1 for f in fields if str(row.get(f, "")).strip() not in blanks)
+    return round(filled / len(fields), 2)
+
+
+def _build_raised_queries(audit_rows: list) -> list:
+    """Build rich, structured Raised Query records for every package with ≥1 failed check.
+
+    Each record contains nested library, overall_risk, checks (all 5), and metadata sections.
+    audit_rows — list of dicts from the Tab-2 audit loop (must include _results, _row_data).
+    """
+    import datetime
+    queries = []
+    for i, row in enumerate(audit_rows, start=1):
+        results  = row.get("_results", [])
+        row_data = row.get("_row_data", row)   # full row dict
+
+        # Only raise a query when at least one check is medium/high/critical
+        has_issue = any(
+            r.get("severity", "pass") not in ("pass", "low") for r in results
+        )
+        if not has_issue:
+            continue
+
+        # Worst overall severity
+        worst     = max(results, key=lambda r: _SEV_RANK.get(r.get("severity", "pass"), 0))
+        worst_sev = worst.get("severity", "pass")
+
+        # Overall risk score + band (emoji-free for JSON output)
+        try:
+            score    = _risk_score(row_data)
+            band_raw = _risk_band(score)
+            # Strip leading emoji + space e.g. "🟢 Low (80)" → "Low (80)"
+            band = re.sub(r'^[^\x00-\x7F]+\s*', '', band_raw).strip()
+        except Exception:
+            score, band = None, "unknown"
+
+        # Confidence based on data completeness
+        confidence = _calc_confidence(row_data)
+
+        # Per-check output — ALL 5 checks included (pass + fail)
+        checks_out = []
+        for chk, result in zip(_SECURITY_CHECKS, results):
+            cid      = chk["id"]
+            meta     = _CHECK_META.get(cid, {})
+            sev      = result.get("severity", "pass")
+            weight   = _CHECK_WEIGHT.get(cid, 10)
+            rscore   = int(weight * _SEV_FRAC.get(sev, 0.0))
+            evidence = _extract_evidence(cid, result, row_data)
+            # Reason: strip all non-ASCII (emojis, symbols) from details string
+            reason = re.sub(r'[^\x00-\x7F]+', '',
+                            result.get("details", "")).strip(" —·—")
+            checks_out.append({
+                "id":         meta.get("json_id", cid),
+                "category":   meta.get("category", "general"),
+                "severity":   sev,
+                "status":     _SEV_TO_STATUS.get(sev, "warning"),
+                "title":      chk["name"],
+                "evidence":   evidence,
+                "reason":     reason,
+                "risk_score": rscore,
+            })
+
+        # Dynamic sources list based on registry
+        registry = row.get("Registry", "")
+        sources  = ["GitHub", "OSV"]
+        if "PyPI"    in registry: sources.append("PyPI")
+        if "npm"     in registry: sources.append("NPM")
+        if "Maven"   in registry: sources.append("Maven")
+        if "NuGet"   in registry: sources.append("NuGet")
+        if "Crates"  in registry: sources.append("Crates.io")
+        if "Docker"  in registry: sources.append("Docker Hub")
+        if "Hugging" in registry: sources.append("HuggingFace")
+        sources.append("NVD")
+
+        queries.append({
+            "query_id": f"RQ-{i:03d}",
+            "library": {
+                "name":        row.get("Library", "—"),
+                "registry":    row.get("Registry", "—"),
+                "version":     row.get("Version", "N/A"),
+                "description": row_data.get("Description", "—"),
+                "license":     row_data.get("License", "—"),
+                "downloads":   row_data.get("Downloads", "—"),
+                "repo":        row_data.get("Repo", "N/A"),
+                "maintainer":  row_data.get("Maintainer", "—"),
+            },
+            "overall_risk": {
+                "score":      score,
+                "band":       band,
+                "severity":   worst_sev,
+                "confidence": confidence,
+            },
+            "checks": checks_out,
+            "metadata": {
+                "generated_at":   datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "engine_version": "2.0.0",
+                "sources":        sources,
+            },
+        })
+    return queries
+
+
+def _build_supply_chain_json(audit_rows: list) -> list:
+    """Same rich JSON schema as _build_raised_queries but includes ALL packages
+    (pass and fail alike). Used for the Supply Chain JSON export download."""
+    import datetime
+    records = []
+    for i, row in enumerate(audit_rows, start=1):
+        results  = row.get("_results", [])
+        row_data = row.get("_row_data", row)
+
+        worst     = max(results, key=lambda r: _SEV_RANK.get(r.get("severity","pass"), 0),
+                        default={"severity": "pass"})
+        worst_sev = worst.get("severity", "pass")
+
+        try:
+            score    = _risk_score(row_data)
+            band_raw = _risk_band(score)
+            band     = re.sub(r'^[^\x00-\x7F]+\s*', '', band_raw).strip()
+        except Exception:
+            score, band = None, "unknown"
+
+        confidence = _calc_confidence(row_data)
+
+        checks_out = []
+        for chk, result in zip(_SECURITY_CHECKS, results):
+            cid      = chk["id"]
+            meta     = _CHECK_META.get(cid, {})
+            sev      = result.get("severity", "pass")
+            weight   = _CHECK_WEIGHT.get(cid, 10)
+            rscore   = int(weight * _SEV_FRAC.get(sev, 0.0))
+            evidence = _extract_evidence(cid, result, row_data)
+            reason   = re.sub(r'[^\x00-\x7F]+', '',
+                              result.get("details", "")).strip(" —·—")
+            checks_out.append({
+                "id":         meta.get("json_id", cid),
+                "category":   meta.get("category", "general"),
+                "severity":   sev,
+                "status":     _SEV_TO_STATUS.get(sev, "warning"),
+                "title":      chk["name"],
+                "evidence":   evidence,
+                "reason":     reason,
+                "risk_score": rscore,
+            })
+
+        registry = row.get("Registry", "")
+        sources  = ["GitHub", "OSV"]
+        if "PyPI"    in registry: sources.append("PyPI")
+        if "npm"     in registry: sources.append("NPM")
+        if "Maven"   in registry: sources.append("Maven")
+        if "NuGet"   in registry: sources.append("NuGet")
+        if "Crates"  in registry: sources.append("Crates.io")
+        if "Docker"  in registry: sources.append("Docker Hub")
+        if "Hugging" in registry: sources.append("HuggingFace")
+        sources.append("NVD")
+
+        records.append({
+            "library": {
+                "name":        row.get("Library", "—"),
+                "registry":    row.get("Registry", "—"),
+                "version":     row.get("Version", "N/A"),
+                "description": row_data.get("Description", "—"),
+                "license":     row_data.get("License", "—"),
+                "downloads":   row_data.get("Downloads", "—"),
+                "repo":        row_data.get("Repo", "N/A"),
+                "maintainer":  row_data.get("Maintainer", "—"),
+            },
+            "overall_risk": {
+                "score":      score,
+                "band":       band,
+                "severity":   worst_sev,
+                "confidence": confidence,
+            },
+            "checks": checks_out,
+            "metadata": {
+                "generated_at":   datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "engine_version": "2.0.0",
+                "sources":        sources,
+            },
+        })
+    return records
+
+
+def _aggregate_severity(check_results):
+    """Worst-of aggregation: highest severity across all checks wins."""
+    if not check_results:
+        return "pass"
+    worst = max(check_results, key=lambda r: _SEV_RANK.get(r.get("severity","pass"), 0))
+    return worst.get("severity", "pass")
+
+def _severity_badge(severity):
+    """Render a severity as a colored badge string for tables."""
+    return f"{_SEV_EMOJI.get(severity,'⚪')} {_SEV_LABEL.get(severity,'—')}"
+
+def _no_source_flag(repo: str) -> str:
+    """Flag packages with no source repository — zero transparency = red flag."""
+    if not repo or str(repo).strip() in ("N/A", "—", "", "None", "null"):
+        return "🚨 No Source"
+    return "✅"
+
+def _parse_download_num(s) -> int:
+    """Convert formatted download strings ('452.4M', '16K') back to integers."""
+    if not s or s in ("—", "N/A", "", None):
+        return 0
+    s = str(s).strip().upper().replace(",", "")
+    mult = 1
+    if s.endswith("B"):   mult = 1_000_000_000; s = s[:-1]
+    elif s.endswith("M"): mult = 1_000_000;     s = s[:-1]
+    elif s.endswith("K"): mult = 1_000;         s = s[:-1]
+    try:
+        return int(float(s) * mult)
+    except (ValueError, TypeError):
+        return 0
+
+def _single_maintainer_risk(maintainer: str, downloads) -> str:
+    """
+    Flag packages with ≤5 maintainers AND ≥1M downloads.
+    Classic supply-chain risk pattern (cf. left-pad incident).
+    Maintainer strings encode count as '+N' suffix, e.g. 'username +3' = 4 total.
+    """
+    dl = _parse_download_num(downloads)
+    s  = str(maintainer or "")
+
+    # Parse total maintainer count from '+N' suffix
+    _m = re.search(r'\+\s*(\d+)', s)
+    count = (1 + int(_m.group(1))) if _m else (1 if s.strip() and s not in ("—", "") else 0)
+
+    if 0 < count <= 5 and dl >= 1_000_000:
+        return "⚠️ Bus Factor"   # critical single point of failure
+    if 0 < count <= 5 and dl >= 100_000:
+        return "ℹ️ Solo"          # small team but moderate risk
+    return ""
+
+def _risk_score(row, rules=None) -> int:
+    """
+    Composite risk score 0-100 (higher = safer).
+    Combines status, license, CVE, country, source, and maintainer signals.
+
+    Breakdown (max 100):
+      • Status     (30) — Active=30, Aging=15, Unknown=10, Abandoned=0
+      • License    (20) — Safe=20, Copyleft/Other=10, Missing=0
+      • CVEs       (20) — None=20, has CVE=0
+      • Country    (15) — Trusted=15, Caution=10, Unrated=8, Restricted=0
+      • Source     (10) — has repo=10, none=0
+      • Maintainer (5)  — multi or low-dl solo=5, Bus Factor=0
+
+    Optional: pass `rules` (loaded via _load_custom_rules) to apply user-defined
+    score deductions for matched rules:
+      • critical = -50  • high = -25  • medium = -10  • low = -3
+    Score is clamped to [0, 100] so multiple matches never break the band logic.
+    """
+    score = 0
+    # Status
+    s = row.get("Status", "")
+    if "Active" in s:        score += 30
+    elif "Aging" in s:       score += 15
+    elif "Unknown" in s:     score += 10
+    # License risk
+    lr = row.get("License Risk", "") or _license_risk(row.get("License", ""))
+    if "Safe" in lr:                  score += 20
+    elif "Copyleft" in lr or "Other" in lr: score += 10
+    # CVE
+    cves = str(row.get("CVEs", "") or "")
+    if cves in ("None", "—", ""):     score += 20
+    # Country tier (only if country has been resolved)
+    ct = row.get("Country Tier", "") or _country_tier(row.get("Country", ""))
+    if "Trusted" in ct:    score += 15
+    elif "Caution" in ct:  score += 10
+    elif "Unrated" in ct:  score += 8
+    # Source repo
+    src = row.get("Repo", "")
+    if src and str(src).strip() not in ("N/A", "—", "", "None"):
+        score += 10
+    # Maintainer / bus factor
+    sm = row.get("Single Maintainer", "") or _single_maintainer_risk(
+            row.get("Maintainer", ""), row.get("Downloads", ""))
+    if "Bus Factor" not in sm:
+        score += 5
+    # ── Custom rules penalty (Phase 2: user-uploaded blocklist) ────────────
+    if rules:
+        for m in _custom_rule_match(row, rules):
+            score -= _SEV_PENALTY.get(m["severity"], 0)
+    return max(0, min(score, 100))
+
+def _risk_band(score: int) -> str:
+    """Convert a 0-100 risk score into a band emoji + label."""
+    if score >= 80: return f"🟢 Low ({score})"
+    if score >= 60: return f"🟡 Medium ({score})"
+    if score >= 40: return f"🟠 High ({score})"
+    return f"🔴 Critical ({score})"
+
+# ── Custom Rules / Blocklist (user-uploaded CSV/JSON) ─────────────────────────
+# Lets users define their own rules (e.g. banned packages, restricted licenses)
+# that contribute to the existing 4-tier Risk classification via score deductions.
+import csv as _csv_mod
+import io as _io_mod
+_VALID_FIELDS      = {"library","maintainer","country","license","registry","version"}
+_VALID_MATCH_TYPES = {"exact","contains","regex"}
+_VALID_SEVERITY    = {"low","medium","high","critical"}
+_SEV_DEFAULT_EMOJI = {"low":"🟢","medium":"🟡","high":"🟠","critical":"🚨"}
+_SEV_PENALTY       = {"low":3,"medium":10,"high":25,"critical":50}
+# Rule field name → DataFrame column
+_FIELD_TO_COL = {
+    "library":"Library", "maintainer":"Maintainer", "country":"Country",
+    "license":"License", "registry":"Registry",     "version":"Version",
+}
+
+def _load_custom_rules(uploaded_file):
+    """
+    Parse a Streamlit UploadedFile (CSV or JSON) into a normalised rule list.
+    Returns (rules, warnings). Malformed rows are skipped with a per-row warning;
+    regex rules that fail to compile are also dropped.
+
+    File format is auto-detected from the filename extension (.json vs .csv).
+    Bare JSON arrays and {"rules": [...]} wrappers are both accepted.
+    """
+    if uploaded_file is None:
+        return [], []
+    try:
+        raw = uploaded_file.getvalue().decode("utf-8", errors="replace")
+    except Exception as _e:
+        return [], [f"Decode error: {_e}"]
+    name = (getattr(uploaded_file, "name", "") or "").lower()
+    rows = []
+    warnings = []
+
+    try:
+        if name.endswith(".json"):
+            obj = json.loads(raw)
+            rows = obj.get("rules", obj) if isinstance(obj, dict) else obj
+            if not isinstance(rows, list):
+                return [], ["JSON must be an array or {\"rules\": [...]} object"]
+        else:
+            rows = list(_csv_mod.DictReader(_io_mod.StringIO(raw)))
+    except Exception as _e:
+        return [], [f"Parse error: {_e}"]
+
+    out = []
+    for i, r in enumerate(rows, start=1):
+        if not isinstance(r, dict):
+            warnings.append(f"Row {i}: not an object — skipped")
+            continue
+        rid    = str(r.get("rule_id","") or f"R{i:03d}").strip()
+        field  = str(r.get("field","") or "").strip().lower()
+        mtype  = str(r.get("match_type","") or "contains").strip().lower()
+        patt   = str(r.get("pattern","") or "").strip()
+        sev    = str(r.get("severity","") or "").strip().lower()
+
+        if field not in _VALID_FIELDS:
+            warnings.append(f"Row {i} ({rid}): bad field '{field}' — skipped"); continue
+        if mtype not in _VALID_MATCH_TYPES:
+            warnings.append(f"Row {i} ({rid}): bad match_type '{mtype}' — skipped"); continue
+        if sev not in _VALID_SEVERITY:
+            warnings.append(f"Row {i} ({rid}): bad severity '{sev}' — skipped"); continue
+        if not patt:
+            warnings.append(f"Row {i} ({rid}): empty pattern — skipped"); continue
+
+        compiled = None
+        if mtype == "regex":
+            try:
+                compiled = re.compile(patt, re.IGNORECASE)
+            except re.error as _re_err:
+                warnings.append(f"Row {i} ({rid}): regex error — {_re_err}"); continue
+
+        out.append({
+            "rule_id":    rid,
+            "name":       str(r.get("name", rid) or rid).strip() or rid,
+            "field":      field,
+            "match_type": mtype,
+            "pattern":    patt,
+            "compiled":   compiled,
+            "severity":   sev,
+            "emoji":      str(r.get("emoji","") or _SEV_DEFAULT_EMOJI[sev]),
+        })
+    return out, warnings
+
+def _custom_rule_match(row, rules):
+    """
+    Return the list of rule dicts that match this row.
+    Pure function — no side effects. Mirrors _single_maintainer_risk pattern.
+    """
+    if not rules:
+        return []
+    matched = []
+    for rule in rules:
+        col = _FIELD_TO_COL.get(rule["field"])
+        if not col:
+            continue
+        val = str(row.get(col, "") or "")
+        if not val or val.strip() in ("—","N/A","None"):
+            continue
+
+        hit = False
+        if rule["match_type"] == "exact":
+            hit = val.strip().lower() == rule["pattern"].lower()
+        elif rule["match_type"] == "contains":
+            hit = rule["pattern"].lower() in val.lower()
+        elif rule["match_type"] == "regex" and rule["compiled"] is not None:
+            hit = bool(rule["compiled"].search(val))
+
+        if hit:
+            matched.append(rule)
+    return matched
+
+def _custom_flags_display(matched):
+    """Render matched rules into the 'Custom Flags' column string."""
+    if not matched:
+        return ""
+    return ", ".join(f"{m['emoji']} {m['name']}" for m in matched)
 
 # ── Maintainer helpers ─────────────────────────────────────────────────────────
 _ORG_TOKENS = {
@@ -3322,15 +4517,35 @@ class NuGetAdapter(BaseAdapter):
                 m = "—"
         else:
             m = _m_auto(str(authors))
-        lic_raw      = d.get("licenseExpression","") or d.get("licenseUrl","") or "—"
-        lic          = lic_raw.rstrip("/").split("/")[-1] if lic_raw.startswith("http") else lic_raw
-        c            = check_vuln(d.get("id",pkg),"NuGet")
-        pid          = d.get("id", pkg)
-        ver          = d.get("version", "N/A")
-        # Search API returns published=null — use the Registration API instead
-        last_updated = d.get("published") or self._nuget_published_date(pid, ver)
+        # License extraction:
+        # 1. licenseExpression (SPDX) — newest NuGet format, most accurate
+        # 2. licenseUrl — older URL-based; _lic() now parses common patterns
+        # 3. GitHub fallback — if NuGet has projectUrl pointing to GitHub,
+        #    fetch the repo's authoritative SPDX license from the GitHub API
+        lic_raw = d.get("licenseExpression","") or d.get("licenseUrl","") or "—"
+        lic     = _lic(lic_raw)
+        c       = check_vuln(d.get("id",pkg),"NuGet")
+        pid     = d.get("id", pkg)
+        ver     = d.get("version", "N/A")
         # Country lookup → real GitHub org from projectUrl
         _gh = _gh_owner_from_url(d.get("projectUrl",""))
+        # GitHub license fallback when NuGet's data is mangled / missing
+        if lic in ("—", "") and _gh:
+            try:
+                _repo_part = (d.get("projectUrl","") or "").rstrip("/").split("/")[-1]
+                _glr = requests.get(
+                    f"https://api.github.com/repos/{_gh}/{_repo_part}",
+                    headers={"User-Agent":"RegistryIntelligencePlatform/1.0",
+                             "Accept":"application/vnd.github+json"},
+                    timeout=6)
+                if _glr.status_code == 200:
+                    _glic = (_glr.json().get("license") or {}).get("spdx_id", "")
+                    if _glic and _glic not in ("NOASSERTION", "", None):
+                        lic = _glic
+            except Exception:
+                pass
+        # Search API returns published=null — use the Registration API instead
+        last_updated = d.get("published") or self._nuget_published_date(pid, ver)
         # Source button → always the NuGet page for this package
         return _row(pid, "NuGet", d.get("version","N/A"),
                     d.get("description",""), lic,
@@ -4312,8 +5527,35 @@ class WingetAdapter(BaseAdapter):
                                 repo_desc = f"{_gh_lang} project"
                             elif _gh_topics:
                                 repo_desc = _gh_topics[:72]
+                        # ── Fetch latest version (release tag, then tag fallback) ──
+                        # The repos endpoint doesn't include version info, so we make
+                        # a follow-up call. Most popular projects publish releases;
+                        # for those without, we fall back to the latest tag.
+                        _gh_version = "—"
+                        try:
+                            _rel = requests.get(
+                                f"https://api.github.com/repos/{owner}/{repo_name}/releases/latest",
+                                headers=gh_headers, timeout=6)
+                            if _rel.status_code == 200:
+                                _gh_version = (_rel.json().get("tag_name") or
+                                               _rel.json().get("name") or "—")
+                            elif _rel.status_code == 404:
+                                # No releases — try tags as fallback
+                                _tag = requests.get(
+                                    f"https://api.github.com/repos/{owner}/{repo_name}/tags?per_page=1",
+                                    headers=gh_headers, timeout=6)
+                                if _tag.status_code == 200:
+                                    _tags = _tag.json()
+                                    if _tags:
+                                        _gh_version = _tags[0].get("name", "—")
+                        except Exception:
+                            pass
+                        # Clean common version prefix "v"
+                        if _gh_version and _gh_version.lower().startswith("v") \
+                                and len(_gh_version) > 1 and _gh_version[1].isdigit():
+                            _gh_version = _gh_version[1:]
                         best_fallback_row = _row(
-                            repo_name, "GitHub", "—",
+                            repo_name, "GitHub", _gh_version or "—",
                             repo_desc, _gh_license, _gh_stars,
                             _m_user(owner), "—",
                             repo_url_html,
@@ -4826,6 +6068,50 @@ with st.sidebar:
     nexus_repo_creds = st.text_input("user:password (optional)", type="password",
                                      placeholder="admin:password", key="nxs_creds")
 
+    # ── Custom Rules / Blocklist (CSV or JSON) ────────────────────────────────
+    # Users upload their own pattern-based rules that deduct from each package's
+    # Risk Score. Matching is shown inline in a new "Custom Flags" column.
+    st.markdown('<div class="sb-label">Custom Rules / Blocklist</div>',
+                unsafe_allow_html=True)
+    st.caption("Upload CSV/JSON. Matches deduct from Risk Score (UTF-8 only).")
+
+    _uploaded_rules = st.file_uploader(
+        "Rules file", type=["csv","json"],
+        key="custom_rules_upload", label_visibility="collapsed",
+        help="Columns: rule_id, name, field, match_type, pattern, severity, [emoji]"
+    )
+    # Reload only when the filename actually changes (Streamlit reruns happen
+    # on every interaction — without this guard we'd re-parse on each rerun)
+    if (_uploaded_rules is not None
+            and st.session_state.get("custom_rules_filename") != _uploaded_rules.name):
+        _new_rules, _new_warns = _load_custom_rules(_uploaded_rules)
+        st.session_state["custom_rules"]          = _new_rules
+        st.session_state["custom_rules_filename"] = _uploaded_rules.name
+        st.session_state["custom_rules_warnings"] = _new_warns
+
+    _loaded_rules = st.session_state.get("custom_rules", [])
+    if _loaded_rules:
+        st.success(
+            f"✓ {len(_loaded_rules)} rule{'s' if len(_loaded_rules) > 1 else ''} "
+            f"loaded from `{st.session_state.get('custom_rules_filename','file')}`"
+        )
+        with st.expander("Preview loaded rules", expanded=False):
+            _preview = [
+                {"ID": r["rule_id"], "Name": r["name"], "Field": r["field"],
+                 "Match": r["match_type"], "Pattern": r["pattern"],
+                 "Severity": r["severity"]}
+                for r in _loaded_rules
+            ]
+            st.dataframe(_preview, use_container_width=True, hide_index=True)
+        for _w in st.session_state.get("custom_rules_warnings", []):
+            st.warning(_w)
+        if st.button("Clear rules", key="clear_custom_rules",
+                     use_container_width=True):
+            for _k in ("custom_rules","custom_rules_filename",
+                       "custom_rules_warnings","custom_rules_upload"):
+                st.session_state.pop(_k, None)
+            st.rerun()
+
 kaggle_username, kaggle_key_val = "", ""
 if kaggle_raw and ":" in kaggle_raw:
     kaggle_username, kaggle_key_val = kaggle_raw.split(":",1)
@@ -5010,33 +6296,20 @@ if "scan_data" in st.session_state:
         st.markdown("")
 
         # ── Tabs ──────────────────────────────────────────────────────────────
-        tab_scan, tab_profile = st.tabs(["📦  Scan Results", "👤  Maintainer Profile"])
+        tab_scan, tab_geo, tab_profile = st.tabs(
+            ["📦  Scan Results", "🌍  Supply Chain Risk", "👤  Maintainer Profile"]
+        )
 
         # ════════════════════════════════════════════════════════════════════
         # TAB 1 — Scan Results
         # ════════════════════════════════════════════════════════════════════
         with tab_scan:
-            if vuln:
-                st.error(
-                    f"**{vuln} package{'s' if vuln>1 else ''} with known CVEs detected** "
-                    "— review and patch immediately.", icon="🚨")
-                st.markdown('<div class="sec-label">Vulnerability Detail</div>',
-                            unsafe_allow_html=True)
-                for _, row in vuln_rows.iterrows():
-                    _md(f"""
-<div class="vuln-card">
-  <div style="font-size:1.1rem;flex-shrink:0;margin-top:0.1rem">⚠️</div>
-  <div>
-    <div class="vuln-lib">{row['Library']}</div>
-    <div class="vuln-meta">{row['Registry']}  ·  v{row['Version']}  ·  {row['Maintainer']}  ·  {row['License']}  ·  Updated: {row['Last Updated']}</div>
-    <div class="vuln-cves">{row['CVEs']}</div>
-  </div>
-</div>""")
-
-            if secure > 0:
-                st.success(
-                    f"{int(secure)} package{'s' if secure>1 else ''} audited — no known CVEs.",
-                    icon="✅")
+            # ── Vulnerability Detail card REMOVED per user request ────────────
+            # The CVE data is still computed (vuln, vuln_rows, secure) and stays
+            # in the main results table's "CVEs" column + the Risk Dashboard's
+            # CVE count + the Vulnerability Report CSV export. Just the
+            # top-of-page red-card listing is hidden.
+            pass
 
             _sq = [t.strip() for t in
                    st.session_state.get("scan_query","").replace("\n",",").split(",")
@@ -5067,6 +6340,81 @@ if "scan_data" in st.session_state:
                 "Status",
                 disp_df["Last Updated"].apply(_pkg_status)
             )
+
+            # ── Phase 2 Risk Suite — compute all 6 new checks ────────────────
+            disp_df["License Risk"] = disp_df["License"].apply(_license_risk)
+            disp_df["Single Maintainer"] = disp_df.apply(
+                lambda r: _single_maintainer_risk(r.get("Maintainer",""),
+                                                  r.get("Downloads","")),
+                axis=1
+            )
+            # ── Custom Rules / Blocklist (Phase 2 user-uploaded blocklist) ───
+            # If rules have been uploaded via sidebar, compute the Custom Flags
+            # column (which rules each package matched) BEFORE Risk Score so
+            # the penalty is reflected in the band.
+            _active_rules = st.session_state.get("custom_rules", [])
+            if _active_rules:
+                disp_df["Custom Flags"] = disp_df.apply(
+                    lambda r: _custom_flags_display(_custom_rule_match(r, _active_rules)),
+                    axis=1
+                )
+
+            # Risk Score (composite 0-100) — Country tier will improve it once
+            # the user clicks "Load Maintainer Countries" (rerun adds Country col).
+            # Custom rules (if any) deduct from the score via the `rules` param.
+            disp_df["Risk Score"]   = disp_df.apply(
+                lambda r: _risk_score(r, _active_rules), axis=1
+            )
+            disp_df["Risk"]         = disp_df["Risk Score"].apply(_risk_band)
+
+            # ── Risk Dashboard — summary metrics at the top ──────────────────
+            st.markdown(
+                '<div class="sec-label">🛡️ Risk Dashboard</div>',
+                unsafe_allow_html=True
+            )
+            _dc1, _dc2, _dc3, _dc4 = st.columns(4)
+            _low  = (disp_df["Risk Score"] >= 80).sum()
+            _med  = ((disp_df["Risk Score"] >= 60) & (disp_df["Risk Score"] < 80)).sum()
+            _high = ((disp_df["Risk Score"] >= 40) & (disp_df["Risk Score"] < 60)).sum()
+            _crit = (disp_df["Risk Score"] < 40).sum()
+            _dc1.metric("🟢 Low Risk",      f"{_low}",   f"{_low/len(disp_df)*100:.0f}%")
+            _dc2.metric("🟡 Medium Risk",   f"{_med}",   f"{_med/len(disp_df)*100:.0f}%")
+            _dc3.metric("🟠 High Risk",     f"{_high}",  f"{_high/len(disp_df)*100:.0f}%")
+            _dc4.metric("🔴 Critical Risk", f"{_crit}",  f"{_crit/len(disp_df)*100:.0f}%")
+
+            # Secondary metric row — license + maintainer signals
+            _dc5, _dc6, _dc7 = st.columns(3)
+            _safe_lic    = (disp_df["License Risk"] == "✅ Safe").sum()
+            _no_lic      = (disp_df["License Risk"] == "❌ Missing").sum()
+            _bus_factor  = (disp_df["Single Maintainer"].str.contains("Bus Factor", na=False)).sum()
+            _dc5.metric("✅ Safe Licenses", f"{_safe_lic}")
+            _dc6.metric("❌ Missing License", f"{_no_lic}")
+            _dc7.metric("⚠️ Bus Factor", f"{_bus_factor}",
+                        help="Single maintainer + 1M+ downloads — left-pad style risk")
+
+            # Tertiary row — custom-rule metrics (only when rules are loaded)
+            if _active_rules:
+                _dc9, _dc10 = st.columns(2)
+                _flagged = (disp_df["Custom Flags"].astype(str).str.len() > 0).sum()
+                _crit_flagged = sum(
+                    1 for _, _r in disp_df.iterrows()
+                    if any(m["severity"] == "critical"
+                           for m in _custom_rule_match(_r, _active_rules))
+                )
+                _dc9.metric("🎯 Rules Triggered", f"{int(_flagged)}",
+                            help="Packages matching at least one custom rule")
+                _dc10.metric("🚨 Critical Rule Hits", f"{int(_crit_flagged)}",
+                             help="Packages matching at least one critical-severity rule")
+
+            # Top 5 riskiest packages
+            if _crit > 0 or _high > 0:
+                _riskiest = disp_df.nsmallest(5, "Risk Score")[
+                    ["Library","Registry","Risk","Status","License Risk"]
+                ].copy()
+                with st.expander(f"🔥 Top {len(_riskiest)} riskiest packages", expanded=False):
+                    st.dataframe(_riskiest, use_container_width=True, hide_index=True)
+
+            st.markdown("---")
 
             # Count by status
             _abandoned = (disp_df["Status"] == "🚨 Abandoned").sum()
@@ -5108,16 +6456,24 @@ if "scan_data" in st.session_state:
             if _status_filter != "All":
                 disp_df = disp_df[disp_df["Status"] == _status_filter]
 
-            st.dataframe(disp_df, use_container_width=True, hide_index=True,
-                height=min(56+38*len(disp_df), 640),
+            # Drop the raw numeric Risk Score from the displayed view
+            # (the formatted "Risk" column already shows the band + number)
+            _display_df = disp_df.drop(columns=["Risk Score"], errors="ignore")
+
+            st.dataframe(_display_df, use_container_width=True, hide_index=True,
+                height=min(56+38*len(_display_df), 640),
                 column_config={
+                    "Risk":         st.column_config.TextColumn("Risk",         width="small"),
                     "Status":       st.column_config.TextColumn("Status",       width="small"),
                     "Library":      st.column_config.TextColumn("Package",      width="medium"),
                     "Registry":     st.column_config.TextColumn("Registry",     width="medium"),
                     "Version":      st.column_config.TextColumn("Version",      width="small"),
                     "Maintainer":   st.column_config.TextColumn("Maintainer",   width="medium"),
+                    "Single Maintainer": st.column_config.TextColumn("Bus Risk", width="small"),
                     "CVEs":         st.column_config.TextColumn("CVE IDs",      width="medium"),
                     "License":      st.column_config.TextColumn("License",      width="small"),
+                    "License Risk": st.column_config.TextColumn("Lic Risk",     width="small"),
+                    "Custom Flags": st.column_config.TextColumn("Custom Flags", width="medium"),
                     "Downloads":    st.column_config.TextColumn("Downloads",    width="small"),
                     "Last Updated": st.column_config.TextColumn("Last Updated", width="small"),
                     "Description":  st.column_config.TextColumn("Description",  width="large"),
@@ -5281,7 +6637,7 @@ if "scan_data" in st.session_state:
                         )
                         _fe2.download_button(
                             "⬇ Export Filtered JSON",
-                            filtered_cdf.to_json(orient="records", indent=2),
+                            _clean_for_json_export(filtered_cdf),
                             "maintainers_by_country.json", "application/json",
                             use_container_width=True
                         )
@@ -5290,7 +6646,7 @@ if "scan_data" in st.session_state:
             # Use disp_df (which includes the Status column) for all exports
             # so downloaded files match exactly what the user sees on screen.
             st.markdown("---")
-            json_str = disp_df.to_json(orient="records", indent=2)
+            json_str = _clean_for_json_export(disp_df)
             e1,e2,e3 = st.columns(3)
             e1.download_button("⬇ Export CSV",  disp_df.to_csv(index=False),
                                "registry_scan.csv","text/csv", use_container_width=True)
@@ -5302,7 +6658,369 @@ if "scan_data" in st.session_state:
                                    "vulnerabilities.csv","text/csv", use_container_width=True)
 
         # ════════════════════════════════════════════════════════════════════
-        # TAB 2 — Maintainer Profile
+        # TAB 2 — Supply Chain Risk Analysis (basic version)
+        # ════════════════════════════════════════════════════════════════════
+        with tab_geo:
+            st.markdown(
+                '<div class="sec-label">🌍 Supply Chain Risk Analysis</div>',
+                unsafe_allow_html=True
+            )
+            st.caption(
+                "Automatic risk assessment based on the geographic origin of each "
+                "package's maintainer / upstream organisation. The lookup runs "
+                "automatically — country data is resolved via the 5-layer pipeline "
+                "(GitHub repo metadata → curated org map → username variants → repo search)."
+            )
+
+            # ── AUTO-LOAD country data if not already cached in session ──────
+            # When the user opens this tab, transparently run _enrich_countries
+            # so they see results without having to manually click a button on
+            # another tab first.
+            _geo_df = st.session_state.get("country_df")
+            if _geo_df is None or "Country" not in (_geo_df.columns if _geo_df is not None else []):
+                with st.spinner("Resolving maintainer countries for geopolitical analysis…"):
+                    try:
+                        st.session_state["country_df"] = _enrich_countries(
+                            df, github_token or ""
+                        )
+                        _geo_df = st.session_state["country_df"]
+                    except Exception as _e:
+                        st.error(f"Country resolution failed: {type(_e).__name__}: {_e}",
+                                 icon="🚨")
+                        _geo_df = None
+
+            # Optional: manual refresh button for re-running the lookup
+            _refresh_col, _ = st.columns([1, 4])
+            if _refresh_col.button("🔄 Refresh country data", use_container_width=True,
+                                   help="Re-runs the country resolution from scratch"):
+                with st.spinner("Re-fetching maintainer countries…"):
+                    st.session_state["country_df"] = _enrich_countries(
+                        df, github_token or ""
+                    )
+                    _geo_df = st.session_state["country_df"]
+                    st.success("Countries refreshed!", icon="🌍")
+
+            if _geo_df is None or "Country" not in _geo_df.columns:
+                st.info(
+                    "Country data could not be loaded. Make sure you have packages "
+                    "in your scan results and that your GitHub token (if configured) "
+                    "isn't rate-limited.",
+                    icon="ℹ️"
+                )
+            else:
+                # Apply Country Tier classification to every row
+                _gdf = _geo_df.copy()
+                _gdf["Country Tier"] = _gdf["Country"].apply(_country_tier)
+
+                # ═══════════════════════════════════════════════════════════════
+                # NEW SECTION — Per-Library Security Audit
+                # Runs all registered checks (_SECURITY_CHECKS) for every library
+                # and shows results as a per-row breakdown.
+                # ═══════════════════════════════════════════════════════════════
+                st.markdown(
+                    '<div class="sec-label">🔍 Per-Library Security Audit</div>',
+                    unsafe_allow_html=True
+                )
+                st.caption(
+                    f"Each library is evaluated against {len(_SECURITY_CHECKS)} "
+                    "security checks. The overall severity is the **worst** "
+                    "result across all checks — a single Critical issue is "
+                    "never masked by other passing checks."
+                )
+
+                # Run all checks for all rows (cached in session for re-renders)
+                _token = (github_token or "")
+                with st.spinner("Running security checks…"):
+                    _audit_rows = []
+                    for _, _row in _gdf.iterrows():
+                        results  = _run_security_checks(_row, _token)
+                        agg      = _aggregate_severity(results)
+                        _audit_rows.append({
+                            "Library":   _row.get("Library", ""),
+                            "Registry":  _row.get("Registry", ""),
+                            "Version":   _row.get("Version", "N/A"),
+                            "_row_data": _row.to_dict(),   # full row for evidence extraction
+                            **{c["name"]: r["label"]
+                               for c, r in zip(_SECURITY_CHECKS, results)},
+                            "Overall":   _severity_badge(agg),
+                            "_results":  results,
+                            "_agg_rank": _SEV_RANK.get(agg, 0),
+                        })
+                    # Build raised queries from all failed checks and persist across reruns
+                    st.session_state["raised_queries"] = _build_raised_queries(_audit_rows)
+
+                # ── Summary metrics across all libraries ──────────────────────
+                _audit_df_full = pd.DataFrame(_audit_rows)
+                _au_crit = (_audit_df_full["_agg_rank"] == 4).sum()
+                _au_high = (_audit_df_full["_agg_rank"] == 3).sum()
+                _au_med  = (_audit_df_full["_agg_rank"] == 2).sum()
+                _au_low  = (_audit_df_full["_agg_rank"] <= 1).sum()
+                _au_tot  = len(_audit_df_full)
+
+                # ── Persist scan to PostgreSQL ────────────────────────────────
+                save_scan_history(
+                    _audit_rows,
+                    st.session_state.get("raised_queries", []),
+                    {
+                        "total":    int(_au_tot),
+                        "critical": int(_au_crit),
+                        "high":     int(_au_high),
+                        "medium":   int(_au_med),
+                        "low":      int(_au_low),
+                    },
+                )
+
+                _ac1, _ac2, _ac3, _ac4 = st.columns(4)
+                _ac1.metric("🔴 Critical", f"{int(_au_crit)}",
+                            f"{_au_crit/_au_tot*100:.0f}%" if _au_tot else "0%")
+                _ac2.metric("🟠 High",     f"{int(_au_high)}",
+                            f"{_au_high/_au_tot*100:.0f}%" if _au_tot else "0%")
+                _ac3.metric("🟡 Medium",   f"{int(_au_med)}",
+                            f"{_au_med/_au_tot*100:.0f}%" if _au_tot else "0%")
+                _ac4.metric("🟢 Low/Pass", f"{int(_au_low)}",
+                            f"{_au_low/_au_tot*100:.0f}%" if _au_tot else "0%")
+
+                # ── Severity filter ───────────────────────────────────────────
+                _sev_filter = st.selectbox(
+                    "Show packages with severity ≥",
+                    options=["All", "🟡 Medium and above", "🟠 High and above",
+                             "🔴 Critical only"],
+                    index=0, key="audit_sev_filter"
+                )
+                _min_rank = {"All": 0, "🟡 Medium and above": 2,
+                             "🟠 High and above": 3, "🔴 Critical only": 4}[_sev_filter]
+                _filtered_audit = _audit_df_full[_audit_df_full["_agg_rank"] >= _min_rank]
+
+                if _filtered_audit.empty:
+                    st.success(
+                        f"✅ No packages match the '{_sev_filter}' filter — "
+                        "your dependencies are clean at this severity level.",
+                        icon="✅"
+                    )
+                else:
+                    # ── Per-library compact table ─────────────────────────────
+                    _table_cols = (["Library", "Registry"] +
+                                   [c["name"] for c in _SECURITY_CHECKS] +
+                                   ["Overall"])
+                    _display_audit = _filtered_audit[_table_cols].sort_values(
+                        by="Overall", ascending=False
+                    )
+                    st.dataframe(
+                        _display_audit, use_container_width=True, hide_index=True,
+                        height=min(56 + 38 * len(_display_audit), 540)
+                    )
+
+                    # ── Drill-down: expandable detail per library ─────────────
+                    st.markdown("##### 🔎 Per-library details")
+                    for _, audit_row in _filtered_audit.iterrows():
+                        _agg_emoji = _SEV_EMOJI.get(
+                            list(_SEV_RANK.keys())[
+                                list(_SEV_RANK.values()).index(int(audit_row["_agg_rank"]))
+                            ], "⚪")
+                        _label = (f"{_agg_emoji}  **{audit_row['Library']}** "
+                                  f"· {audit_row['Registry']} → {audit_row['Overall']}")
+                        with st.expander(_label, expanded=False):
+                            for chk_meta, result in zip(_SECURITY_CHECKS,
+                                                        audit_row["_results"]):
+                                st.markdown(
+                                    f"**{_severity_badge(result['severity'])}** "
+                                    f"· **{chk_meta['name']}** — {result['label']}"
+                                )
+                                st.caption(f"_{result['details']}_")
+
+                # ── Export the audit results ──────────────────────────────────
+                _audit_export = _audit_df_full.drop(
+                    columns=["_results", "_agg_rank"], errors="ignore"
+                )
+                _ae1, _ae2 = st.columns(2)
+                _ae1.download_button(
+                    "⬇ Export Security Audit (CSV)",
+                    _audit_export.to_csv(index=False),
+                    "security_audit.csv", "text/csv",
+                    use_container_width=True, key="dl_audit_csv"
+                )
+                _ae2.download_button(
+                    "⬇ Export Security Audit (JSON)",
+                    json.dumps(_build_supply_chain_json(_audit_rows),
+                               indent=2, ensure_ascii=False),
+                    "security_audit.json", "application/json",
+                    use_container_width=True, key="dl_audit_json"
+                )
+
+                # ── 🚨 Raised Queries ─────────────────────────────────────────
+                st.markdown(
+                    '<div class="sec-label">🚨 Raised Queries</div>',
+                    unsafe_allow_html=True,
+                )
+                st.caption(
+                    "A query is automatically raised for every package that fails "
+                    "one or more security checks. Each query contains the full JSON "
+                    "payload of failed check details for audit, triage, or export."
+                )
+
+                _rq = st.session_state.get("raised_queries", [])
+                if not _rq:
+                    st.success(
+                        "✅ No queries raised — all security checks passed.",
+                        icon="✅",
+                    )
+                else:
+                    st.error(
+                        f"**{len(_rq)} package(s)** triggered failed checks "
+                        "and have been raised as queries below.",
+                        icon="🚨",
+                    )
+
+                    for _q in _rq:
+                        _qs    = _q["overall_risk"]["severity"]
+                        _qemj  = _SEV_EMOJI.get(_qs, "🟡")
+                        _qlbl  = _SEV_LABEL.get(_qs, _qs.title())
+                        _nfail = sum(1 for c in _q["checks"] if c["status"] != "pass")
+                        _qttl  = (
+                            f"{_qemj} **{_q['library']['name']}** "
+                            f"· {_q['library']['registry']} "
+                            f"— {_qlbl} "
+                            f"({_nfail} check(s) failed) "
+                            f"· `{_q['query_id']}`"
+                        )
+                        with st.expander(_qttl, expanded=False):
+                            st.code(
+                                json.dumps(_q, indent=2, ensure_ascii=False),
+                                language="json",
+                            )
+
+                    st.download_button(
+                        "⬇ Export All Raised Queries (JSON)",
+                        data=json.dumps(_rq, indent=2, ensure_ascii=False),
+                        file_name="raised_queries.json",
+                        mime="application/json",
+                        use_container_width=True,
+                        key="dl_raised_queries",
+                    )
+
+                st.markdown("---")
+
+                # ── Section 1: Risk Tier Breakdown ────────────────────────────
+                _trusted    = (_gdf["Country Tier"] == "🟢 Trusted").sum()
+                _caution    = (_gdf["Country Tier"] == "🟡 Caution").sum()
+                _restricted = (_gdf["Country Tier"] == "🔴 Restricted").sum()
+                _unrated    = (_gdf["Country Tier"] == "❓ Unrated").sum()
+                _total      = len(_gdf)
+
+                st.markdown("#### Risk Tier Breakdown")
+                _t1, _t2, _t3, _t4 = st.columns(4)
+                _t1.metric("🟢 Trusted",    f"{_trusted}",
+                           f"{_trusted/_total*100:.0f}%" if _total else "0%")
+                _t2.metric("🟡 Caution",    f"{_caution}",
+                           f"{_caution/_total*100:.0f}%" if _total else "0%")
+                _t3.metric("🔴 Restricted", f"{_restricted}",
+                           f"{_restricted/_total*100:.0f}%" if _total else "0%")
+                _t4.metric("❓ Unrated",    f"{_unrated}",
+                           f"{_unrated/_total*100:.0f}%" if _total else "0%")
+
+                # ── Section 2: Geopolitical Risk Score ────────────────────────
+                # Simple formula: 100 - (restricted% × 1.5) - (unrated% × 0.5)
+                # Higher score = lower geopolitical risk
+                if _total:
+                    _geo_score = max(0, int(100
+                                  - (_restricted / _total * 100 * 1.5)
+                                  - (_unrated    / _total * 100 * 0.5)))
+                else:
+                    _geo_score = 100
+                if _geo_score >= 90:   _geo_band = "🟢 Low geopolitical risk"
+                elif _geo_score >= 70: _geo_band = "🟡 Moderate geopolitical risk"
+                elif _geo_score >= 50: _geo_band = "🟠 High geopolitical risk"
+                else:                  _geo_band = "🔴 Critical geopolitical risk"
+
+                st.markdown("#### Overall Geopolitical Risk Score")
+                _g1, _g2 = st.columns([1, 2])
+                _g1.metric("Score", f"{_geo_score} / 100", _geo_band)
+                _g2.progress(_geo_score / 100,
+                             text=f"{_geo_band}  ·  {_total} packages analysed")
+
+                st.markdown("---")
+
+                # ── Section 3: High-Risk Packages (Restricted-tier) ───────────
+                _restricted_rows = _gdf[_gdf["Country Tier"] == "🔴 Restricted"]
+                if not _restricted_rows.empty:
+                    st.markdown(
+                        f"#### 🚨 High-Risk Packages "
+                        f"({len(_restricted_rows)} from restricted countries)"
+                    )
+                    st.error(
+                        f"**{len(_restricted_rows)} package{'s' if len(_restricted_rows)>1 else ''}** "
+                        "maintained from countries commonly flagged in compliance/sanctions "
+                        "contexts (Russia, China, Iran, North Korea, Belarus, Cuba, Syria, "
+                        "Venezuela, Myanmar). Review your organisation's policy before use.",
+                        icon="🚨"
+                    )
+                    _rcols = ["Library","Registry","Country","Maintainer","Version","Last Updated"]
+                    _rcols = [c for c in _rcols if c in _restricted_rows.columns]
+                    st.dataframe(_restricted_rows[_rcols],
+                                 use_container_width=True, hide_index=True)
+                    st.markdown("---")
+
+                # ── Section 4: Concentration Risk ─────────────────────────────
+                _country_counts = (_gdf["Country"].value_counts())
+                if not _country_counts.empty:
+                    _top_country     = _country_counts.index[0]
+                    _top_country_pct = _country_counts.iloc[0] / _total * 100
+                    if _top_country_pct >= 40 and _top_country not in ("Unknown",):
+                        st.warning(
+                            f"**Concentration risk:** {_top_country_pct:.0f}% of your "
+                            f"dependencies ({int(_country_counts.iloc[0])}/{_total}) "
+                            f"are maintained from **{_top_country}**. Single-country "
+                            "concentration is a supply-chain risk.",
+                            icon="⚠️"
+                        )
+
+                # ── Section 5: Geographic Distribution chart ──────────────────
+                st.markdown("#### Geographic Distribution")
+                _dist_df = _country_counts.reset_index()
+                _dist_df.columns = ["Country", "Packages"]
+                # Add tier for color awareness
+                _dist_df["Tier"] = _dist_df["Country"].apply(_country_tier)
+                st.bar_chart(_dist_df.set_index("Country")["Packages"],
+                             height=300, use_container_width=True)
+
+                # ── Section 6: By-Country Drill-Down ──────────────────────────
+                st.markdown("#### By-Country Breakdown")
+                for _country in _dist_df["Country"]:
+                    _country_rows = _gdf[_gdf["Country"] == _country]
+                    _tier = _country_tier(_country)
+                    with st.expander(
+                        f"{_tier}  ·  {_country}  ·  "
+                        f"{len(_country_rows)} package{'s' if len(_country_rows) > 1 else ''}",
+                        expanded=False
+                    ):
+                        _cols = ["Library","Registry","Maintainer","Version","Last Updated"]
+                        _cols = [c for c in _cols if c in _country_rows.columns]
+                        st.dataframe(_country_rows[_cols],
+                                     use_container_width=True, hide_index=True)
+
+                # ── Export ────────────────────────────────────────────────────
+                st.markdown("---")
+                _geo_export = _gdf[[
+                    c for c in ["Library","Registry","Maintainer","Country",
+                                "Country Tier","Version","Last Updated"]
+                    if c in _gdf.columns
+                ]].copy()
+                _ge1, _ge2 = st.columns(2)
+                _ge1.download_button(
+                    "⬇ Export Supply Chain Risk (CSV)",
+                    _geo_export.to_csv(index=False),
+                    "supply_chain_risk.csv", "text/csv",
+                    use_container_width=True
+                )
+                _ge2.download_button(
+                    "⬇ Export Supply Chain Risk (JSON)",
+                    _clean_for_json_export(_geo_export),
+                    "supply_chain_risk.json", "application/json",
+                    use_container_width=True
+                )
+
+        # ════════════════════════════════════════════════════════════════════
+        # TAB 3 — Maintainer Profile
         # ════════════════════════════════════════════════════════════════════
         with tab_profile:
 
