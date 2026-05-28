@@ -6931,10 +6931,10 @@ if "scan_data" in st.session_state:
                     use_container_width=True, key="dl_audit_csv"
                 )
                 _ae2.download_button(
-                    "⬇ Export Full Audit — All Packages (JSON)",
+                    "⬇ Export Security Audit (JSON)",
                     json.dumps(_build_supply_chain_json(_audit_rows),
                                indent=2, ensure_ascii=False),
-                    "security_audit_all.json", "application/json",
+                    "security_audit.json", "application/json",
                     use_container_width=True, key="dl_audit_json"
                 )
 
@@ -6960,14 +6960,6 @@ if "scan_data" in st.session_state:
                         f"**{len(_rq)} package(s)** triggered failed checks "
                         "and have been raised as queries below.",
                         icon="🚨",
-                    )
-                    st.download_button(
-                        "⬇ Download Raised Queries (JSON)",
-                        data=json.dumps(_rq, indent=2, ensure_ascii=False),
-                        file_name="raised_queries.json",
-                        mime="application/json",
-                        use_container_width=True,
-                        key="dl_raised_queries_json",
                     )
 
                     for _q in _rq:
