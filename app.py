@@ -334,6 +334,22 @@ def cache_clear():
         pass
 
 
+def country_cache_clear():
+    """Wipe every row in the DB country_cache table.
+
+    Call this when the country-resolution logic has been updated and
+    stale cached results (e.g. false 'United States') need to be
+    re-resolved with the corrected code.
+    """
+    try:
+        with _pg_conn() as conn:
+            cur = conn.cursor()
+            cur.execute("DELETE FROM country_cache")
+            cur.close()
+    except Exception:
+        pass
+
+
 def cache_delete(key):
     try:
         with _pg_conn() as conn:
@@ -6308,9 +6324,10 @@ with st.form("scan_form"):
             "Search →  Google Guava   |   image recognition   |   machine learning"
         ),
         height=88, label_visibility="collapsed")
-    c1, c2 = st.columns([4, 1.5])
-    with c1: scan_btn  = st.form_submit_button("🔍  Run Security Scan", use_container_width=True)
-    with c2: clear_btn = st.form_submit_button("🗑  Clear Cache",       use_container_width=True)
+    c1, c2, c3 = st.columns([4, 1.5, 1.5])
+    with c1: scan_btn         = st.form_submit_button("🔍  Run Security Scan",    use_container_width=True)
+    with c2: clear_btn        = st.form_submit_button("🗑  Clear Cache",          use_container_width=True)
+    with c3: clear_country_btn = st.form_submit_button("🗺  Clear Country Cache", use_container_width=True)
 
 if clear_btn:
     cache_clear()
@@ -6320,9 +6337,6 @@ if clear_btn:
     st.session_state.pop("profile_cache", None)
     st.session_state.pop("country_df",    None)
     _GH_SEARCH_CACHE.clear()
-    # NOTE: _fetch_github_country cache is intentionally NOT cleared here.
-    # GitHub user profile lookups have their own 2-hour TTL and are independent
-    # of package scan cache. Clearing them would trigger rate-limiting on re-load.
     # Also wipe all persistent JSON profile cache files
     try:
         for _f in _JSON_CACHE_DIR.glob("*.json"):
@@ -6330,6 +6344,13 @@ if clear_btn:
     except Exception:
         pass
     st.success("Cache cleared — next scan fetches live data.")
+
+if clear_country_btn:
+    country_cache_clear()
+    st.session_state.pop("country_df", None)
+    _fetch_github_country.clear()
+    _country_via_repo_search.clear()
+    st.success("Country cache cleared — re-open Supply Chain tab to re-resolve all countries with the latest logic.")
 
 # ── Run scan (persists results so dropdown reruns still show data) ──────────────
 if scan_btn and q.strip():
