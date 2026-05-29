@@ -1161,6 +1161,141 @@ _KNOWN_ORG_COUNTRY: dict[str, str] = {
     "io-getquill":"United States","getquill":"United States",
 }
 
+# ── Email domain → country map ─────────────────────────────────────────────────
+# Maps the domain part of a corporate email to a country.
+# Only include domains that unambiguously identify a single HQ country.
+# Excludes: gmail/outlook/yahoo (no signal), github.com/microsoft.com (too global).
+_KNOWN_EMAIL_DOMAIN_COUNTRY: dict[str, str] = {
+    # South Korea
+    "samsung.com":"South Korea","samsung.net":"South Korea",
+    "lg.com":"South Korea","lge.com":"South Korea",
+    "hyundai.com":"South Korea","kia.com":"South Korea",
+    "kakao.com":"South Korea","naver.com":"South Korea",
+    "sk.com":"South Korea","skhynix.com":"South Korea",
+    # Japan
+    "sony.com":"Japan","toyota.com":"Japan","fujitsu.com":"Japan",
+    "hitachi.com":"Japan","toshiba.com":"Japan","nec.com":"Japan",
+    "panasonic.com":"Japan","recruit.co.jp":"Japan",
+    "mercari.com":"Japan","rakuten.com":"Japan","cyberagent.co.jp":"Japan",
+    # China
+    "baidu.com":"China","tencent.com":"China","alibaba.com":"China",
+    "alibabacloud.com":"China","huawei.com":"China",
+    "bytedance.com":"China","xiaomi.com":"China",
+    "jd.com":"China","didi.com":"China","meituan.com":"China",
+    # Germany
+    "sap.com":"Germany","siemens.de":"Germany","siemens.com":"Germany",
+    "bmw.de":"Germany","volkswagen.de":"Germany","bosch.com":"Germany",
+    "telekom.de":"Germany","t-systems.com":"Germany",
+    "continental.com":"Germany","bayer.com":"Germany",
+    # France
+    "orange.com":"France","capgemini.com":"France",
+    "atos.net":"France","airbus.com":"France",
+    "thalesgroup.com":"France","dassault-systemes.com":"France",
+    # Netherlands
+    "philips.com":"Netherlands","ing.com":"Netherlands",
+    "asml.com":"Netherlands","booking.com":"Netherlands",
+    # Sweden
+    "ericsson.com":"Sweden","spotify.com":"Sweden",
+    "klarna.com":"Sweden","scania.com":"Sweden","volvo.com":"Sweden",
+    # Finland
+    "nokia.com":"Finland","f-secure.com":"Finland","nordea.com":"Finland",
+    # Switzerland
+    "ubs.com":"Switzerland","roche.com":"Switzerland",
+    "novartis.com":"Switzerland","epfl.ch":"Switzerland","ethz.ch":"Switzerland",
+    # Russia
+    "yandex.ru":"Russia","yandex.com":"Russia",
+    "mail.ru":"Russia","sber.ru":"Russia","kaspersky.com":"Russia",
+    # Australia
+    "atlassian.com":"Australia","canva.com":"Australia",
+    # Canada
+    "shopify.com":"Canada","hootsuite.com":"Canada","blackberry.com":"Canada",
+    # Israel
+    "checkpoint.com":"Israel","wix.com":"Israel","monday.com":"Israel",
+    # India
+    "infosys.com":"India","wipro.com":"India","tcs.com":"India",
+    "zoho.com":"India","freshworks.com":"India",
+    # Norway
+    "opera.com":"Norway","equinor.com":"Norway",
+    # Denmark
+    "unity.com":"Denmark",
+}
+
+# Domains that carry no country signal (webmail / too global)
+_FREE_WEBMAIL = frozenset({
+    "gmail.com","googlemail.com","outlook.com","hotmail.com","live.com",
+    "yahoo.com","yahoo.co.uk","yahoo.co.jp","icloud.com","me.com",
+    "protonmail.com","proton.me","fastmail.com","zohomail.com",
+    "aol.com","msn.com","ymail.com","inbox.com","mail.com",
+})
+
+
+def _country_from_email_domain(email: str) -> "str | None":
+    """Return country if email domain is a known corporate domain, else None."""
+    if not email or "@" not in email:
+        return None
+    domain = email.split("@")[-1].lower().strip()
+    if domain in _FREE_WEBMAIL:
+        return None
+    return _KNOWN_EMAIL_DOMAIN_COUNTRY.get(domain)
+
+
+@st.cache_data(ttl=7200, show_spinner=False)
+def _fetch_github_signals(username: str, token: str = "") -> dict:
+    """
+    Single GitHub API call → returns all country-relevant signals from the
+    user profile. Same HTTP request as before — just reads more fields.
+
+    Returns:
+      {
+        "location_country": str | None,
+        "company_country":  str | None,
+        "email_country":    str | None,
+        "rate_limited":     bool,
+        "not_found":        bool,
+      }
+    """
+    empty = {"location_country": None, "company_country": None,
+             "email_country": None, "rate_limited": False, "not_found": False}
+    if not username or username in ("—", ""):
+        return dict(empty, not_found=True)
+
+    headers = {"User-Agent": "RegistryIntelligencePlatform/1.0",
+               "Accept":     "application/vnd.github+json"}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+
+    for variant in _username_variants(username):
+        try:
+            r = requests.get(f"https://api.github.com/users/{variant}",
+                             headers=headers, timeout=TIMEOUT)
+            if r.status_code == 200:
+                data = r.json()
+                # Signal 1: location field
+                loc_country = _normalize_country(data.get("location") or "")
+                if loc_country == "Unknown":
+                    loc_country = None
+                # Signal 2: company field  e.g. "@samsung", "Google Inc."
+                raw_company = (data.get("company") or "").lstrip("@").strip()
+                comp_key    = raw_company.lower().split()[0] if raw_company else ""
+                comp_country = _KNOWN_ORG_COUNTRY.get(comp_key)
+                # Signal 3: public email on GitHub profile
+                gh_email    = data.get("email") or ""
+                email_country = _country_from_email_domain(gh_email)
+                return {
+                    "location_country": loc_country,
+                    "company_country":  comp_country,
+                    "email_country":    email_country,
+                    "rate_limited":     False,
+                    "not_found":        False,
+                }
+            if r.status_code in (403, 429):
+                return dict(empty, rate_limited=True)
+        except Exception:
+            continue
+
+    return dict(empty, not_found=True)
+
+
 @st.cache_data(ttl=7200, show_spinner=False)
 def _fetch_github_country(username: str, token: str = "") -> str:
     """
@@ -1192,37 +1327,108 @@ def _fetch_github_country(username: str, token: str = "") -> str:
     if cached is not None and cached not in ("Unknown", "⚠️ Rate Limited", ""):
         return cached
 
-    # 2. GitHub API — try variants until one returns 200
-    headers = {"User-Agent": "RegistryIntelligencePlatform/1.0",
-               "Accept":     "application/vnd.github+json"}
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
+    # 2. GitHub API — delegate to _fetch_github_signals (reads location + company + email)
+    signals = _fetch_github_signals(username, token)
+    if signals["rate_limited"]:
+        return "⚠️ Rate Limited"
+    # Best country from signals: location first, then company, then email domain
+    country = (signals["location_country"]
+               or signals["company_country"]
+               or signals["email_country"]
+               or "Unknown")
+    # Only cache REAL countries — never cache "Unknown" so a
+    # subsequent run will retry (e.g. after a normalizer update)
+    if country and country != "Unknown":
+        _country_cache_set(username, country)
+    return country
 
-    rate_limited = False
-    for variant in _username_variants(username):
-        try:
-            r = requests.get(f"https://api.github.com/users/{variant}",
-                             headers=headers, timeout=TIMEOUT)
-            if r.status_code == 200:
-                loc     = r.json().get("location") or ""
-                country = _normalize_country(loc)
-                # Only cache REAL countries — never cache "Unknown" so a
-                # subsequent run will retry (e.g. after a normalizer update)
-                if country and country != "Unknown":
-                    _country_cache_set(username, country)
-                return country
-            if r.status_code in (403, 429):
-                rate_limited = True
-                break          # don't keep hitting a rate-limited API
-            # 404 means this variant doesn't exist — try the next one
-        except Exception:
-            continue
 
-    if rate_limited:
-        return "⚠️ Rate Limited"   # do NOT cache — retry when limit resets
-    # All variants returned 404 → genuinely no GitHub user for this maintainer.
-    # Intentionally NOT caching this — a future code update may resolve it.
-    return "Unknown"
+def _country_with_confidence(
+    gh_owner: str,
+    uname: str,
+    pkg_org: str,
+    name_to_signals: dict,
+) -> "tuple[str, str]":
+    """
+    Return (country, confidence) by combining all available signals.
+
+    confidence values: "High" | "Medium" | "Low" | "Unverified"
+
+    Rules (checked in priority order):
+      1. _KNOWN_ORG_COUNTRY override              → "High"
+      2. 2+ independent signals agree             → "High" (consensus)
+      3. location_country present (not Remote)    → "High"
+      4. company_country or email_country only    → "Medium"
+      5. Resolved via uname variant (not gh_owner)→ "Low"
+      6. Nothing resolved                         → "Unverified"
+    """
+    _REMOTE = {"🌐 Remote / Global"}
+    _BAD    = {None, "Unknown", "⚠️ Rate Limited", ""}
+
+    # Rule 1 — hardcoded override (most trusted)
+    for name in (gh_owner, uname, pkg_org):
+        if name and name.lower() in _KNOWN_ORG_COUNTRY:
+            return _KNOWN_ORG_COUNTRY[name.lower()], "High"
+
+    # Collect signals for gh_owner and uname
+    owner_sig = name_to_signals.get(gh_owner, {}) if gh_owner else {}
+    uname_sig = name_to_signals.get(uname,    {}) if uname    else {}
+    pkorg_sig = name_to_signals.get(pkg_org,  {}) if pkg_org  else {}
+
+    def _valid(country):
+        return country and country not in _BAD and country not in _REMOTE
+
+    # Gather all valid independent country votes from gh_owner signals
+    votes = []
+    for sig_country in (
+        owner_sig.get("location_country"),
+        owner_sig.get("company_country"),
+        owner_sig.get("email_country"),
+    ):
+        if _valid(sig_country):
+            votes.append(sig_country)
+
+    # Rule 2 — consensus: 2+ signals agree → High
+    if len(votes) >= 2:
+        counts = {}
+        for v in votes:
+            counts[v] = counts.get(v, 0) + 1
+        best = max(counts, key=counts.get)
+        if counts[best] >= 2:
+            return best, "High"
+
+    # Rule 3 — location_country from gh_owner is a real place → High
+    loc = owner_sig.get("location_country")
+    if _valid(loc):
+        return loc, "High"
+
+    # Rule 4 — company or email signal from gh_owner → Medium
+    comp = owner_sig.get("company_country")
+    if _valid(comp):
+        return comp, "Medium"
+    eml = owner_sig.get("email_country")
+    if _valid(eml):
+        return eml, "Medium"
+
+    # Try pkg_org signals
+    for sig_country in (
+        pkorg_sig.get("location_country"),
+        pkorg_sig.get("company_country"),
+    ):
+        if _valid(sig_country):
+            return sig_country, "Medium"
+
+    # Rule 5 — uname signals (variant match, less certain) → Low
+    for sig_country in (
+        uname_sig.get("location_country"),
+        uname_sig.get("company_country"),
+        uname_sig.get("email_country"),
+    ):
+        if _valid(sig_country):
+            return sig_country, "Low"
+
+    return "Unknown", "Unverified"
+
 
 def _extract_gh_username(maintainer: str) -> str:
     """
@@ -1444,47 +1650,50 @@ def _enrich_countries(df, github_token: str = "") -> "pd.DataFrame":
         if c["pkg_org"]:
             unique_names.add(c["pkg_org"])
 
-    # ── Pass 3: parallel fetch every unique name (8 workers) ──────────────
-    name_to_country: dict[str, str] = {}
+    # ── Pass 3: parallel fetch signals for every unique name (8 workers) ────
+    name_to_signals: dict[str, dict] = {}
+    name_to_country: dict[str, str]  = {}
     if unique_names:
         with ThreadPoolExecutor(max_workers=8) as _ex:
-            _futures = {_ex.submit(_fetch_github_country, n, github_token): n
+            _futures = {_ex.submit(_fetch_github_signals, n, github_token): n
                         for n in unique_names}
             for _fut in as_completed(_futures):
                 _name = _futures[_fut]
                 try:
-                    name_to_country[_name] = _fut.result() or "Unknown"
+                    sig = _fut.result() or {}
+                    name_to_signals[_name] = sig
+                    # Derive simple country string for backward compat + repo-search check
+                    name_to_country[_name] = (
+                        sig.get("location_country")
+                        or sig.get("company_country")
+                        or sig.get("email_country")
+                        or "Unknown"
+                    )
                 except Exception:
+                    name_to_signals[_name] = {}
                     name_to_country[_name] = "Unknown"
 
-    # ── Pass 4: stitch per-row country + collect repo-search candidates ───
-    # Resolution order per row:
-    #   1. _gh_owner       (from adapter — most accurate when available)
-    #   2. uname           (extracted from Maintainer text)
-    #   3. pkg_org         (well-known package → canonical GitHub org map)
-    #   4. repo search     (queued for parallel fallback below)
-    countries          = []
-    repo_search_queue  = []   # (row_index, library_name)
+    # ── Pass 4: stitch per-row country+confidence + collect repo-search queue
+    countries     = []
+    confidences   = []
+    repo_search_queue = []
     _BAD = {"Unknown", "⚠️ Rate Limited", "", None}
+
     for i, c in enumerate(candidates):
-        country = "Unknown"
-        if c["gh_owner"]:
-            country = name_to_country.get(c["gh_owner"], "Unknown")
-        if country in _BAD and c["uname"]:
-            country = name_to_country.get(c["uname"], "Unknown")
-        if country in _BAD and c["pkg_org"]:
-            country = name_to_country.get(c["pkg_org"], "Unknown")
+        # Try _KNOWN_ORG_COUNTRY overrides first (no signals needed)
+        country, confidence = _country_with_confidence(
+            c["gh_owner"], c["uname"], c["pkg_org"], name_to_signals
+        )
         if country in _BAD and c["lib"] and len(c["lib"]) >= 3:
-            # Mark for repo-search fallback (parallel below)
             repo_search_queue.append((i, c["lib"]))
-            countries.append("Unknown")    # placeholder, may be overridden
+            countries.append("Unknown")
+            confidences.append("Unverified")
         else:
             countries.append(country if country not in _BAD else "Unknown")
+            confidences.append(confidence if country not in _BAD else "Unverified")
 
     # ── Pass 5: parallel repo-search fallback for still-Unknown rows ──────
-    # Use a smaller pool (4) — search API has stricter rate limits than user API
     if repo_search_queue:
-        # Deduplicate by library name too
         unique_libs = {lib for _, lib in repo_search_queue}
         lib_to_country: dict[str, str] = {}
         with ThreadPoolExecutor(max_workers=4) as _ex:
@@ -1496,14 +1705,15 @@ def _enrich_countries(df, github_token: str = "") -> "pd.DataFrame":
                     lib_to_country[_lib] = _fut.result() or "Unknown"
                 except Exception:
                     lib_to_country[_lib] = "Unknown"
-        # Apply repo-search results back to the corresponding rows
         for idx, lib in repo_search_queue:
-            c = lib_to_country.get(lib, "Unknown")
-            if c not in _BAD:
-                countries[idx] = c
+            c_result = lib_to_country.get(lib, "Unknown")
+            if c_result not in _BAD:
+                countries[idx]   = c_result
+                confidences[idx] = "Low"   # repo-search is always Low confidence
 
     df = df.copy()
     df.insert(df.columns.get_loc("Maintainer") + 1, "Country", countries)
+    df.insert(df.columns.get_loc("Country") + 1, "Country Confidence", confidences)
     return df
 
 @st.cache_data(ttl=7200, show_spinner=False)
@@ -1999,7 +2209,9 @@ def _check_bus_factor(row, context):
 # ─── Check 5 — Restricted Geographic Origin ──────────────────────────────────
 def _check_country(row, context):
     """Maps the maintainer's country to the org's risk tier."""
-    country = row.get("Country", "")
+    country    = row.get("Country", "")
+    confidence = row.get("Country Confidence", "")
+    conf_tag   = f" (confidence: {confidence})" if confidence else ""
     if not country or country in ("Unknown", "—", "", "❓ Unknown"):
         return {"severity": "low",
                 "label":    "Country unverified",
@@ -2008,18 +2220,18 @@ def _check_country(row, context):
     if "Unrated" in tier:
         return {"severity": "low",
                 "label":    "Country unverified",
-                "details":  f"Country '{country}' could not be resolved to a risk tier — informational only"}
+                "details":  f"Country '{country}' could not be resolved to a risk tier — informational only{conf_tag}"}
     if "Restricted" in tier:
         return {"severity": "critical",
                 "label":    f"Restricted ({country})",
-                "details":  f"Maintainer in restricted country {country} — sanctions / export-control concern"}
+                "details":  f"Maintainer in restricted country {country} — sanctions / export-control concern{conf_tag}"}
     if "Caution" in tier:
         return {"severity": "medium",
                 "label":    f"Caution ({country})",
-                "details":  f"Maintainer in caution-tier country {country}"}
+                "details":  f"Maintainer in caution-tier country {country}{conf_tag}"}
     return {"severity": "pass",
             "label":    f"Trusted ({country})",
-            "details":  f"Maintainer in trusted country {country}"}
+            "details":  f"Maintainer in trusted country {country}{conf_tag}"}
 
 # ── Security Checks — JSON node ───────────────────────────────────────────────
 # Each check is a self-contained, JSON-serialisable record (no Python function
@@ -2211,10 +2423,14 @@ def _extract_evidence(check_id: str, result: dict, row: dict) -> dict:
         return {"maintainer_count": cnt, "downloads": dl_int}
 
     if check_id == "C5":
-        country  = str(row.get("Country", "—") or "—")
-        tier_raw = row.get("Country Tier", "") or _country_tier(country)
-        tier     = tier_raw.split(" ", 1)[-1].split("(")[0].strip() if tier_raw else "Unknown"
-        return {"country": country, "tier": tier}
+        country    = str(row.get("Country", "—") or "—")
+        tier_raw   = row.get("Country Tier", "") or _country_tier(country)
+        tier       = tier_raw.split(" ", 1)[-1].split("(")[0].strip() if tier_raw else "Unknown"
+        confidence = str(row.get("Country Confidence", "") or "")
+        ev = {"country": country, "tier": tier}
+        if confidence:
+            ev["country_confidence"] = confidence
+        return ev
 
     return {}
 
@@ -7046,7 +7262,7 @@ if "scan_data" in st.session_state:
                         "Venezuela, Myanmar). Review your organisation's policy before use.",
                         icon="🚨"
                     )
-                    _rcols = ["Library","Registry","Country","Maintainer","Version","Last Updated"]
+                    _rcols = ["Library","Registry","Country","Country Confidence","Maintainer","Version","Last Updated"]
                     _rcols = [c for c in _rcols if c in _restricted_rows.columns]
                     st.dataframe(_restricted_rows[_rcols],
                                  use_container_width=True, hide_index=True)
@@ -7085,7 +7301,7 @@ if "scan_data" in st.session_state:
                         f"{len(_country_rows)} package{'s' if len(_country_rows) > 1 else ''}",
                         expanded=False
                     ):
-                        _cols = ["Library","Registry","Maintainer","Version","Last Updated"]
+                        _cols = ["Library","Registry","Maintainer","Country Confidence","Version","Last Updated"]
                         _cols = [c for c in _cols if c in _country_rows.columns]
                         st.dataframe(_country_rows[_cols],
                                      use_container_width=True, hide_index=True)
@@ -7094,7 +7310,7 @@ if "scan_data" in st.session_state:
                 st.markdown("---")
                 _geo_export = _gdf[[
                     c for c in ["Library","Registry","Maintainer","Country",
-                                "Country Tier","Version","Last Updated"]
+                                "Country Confidence","Country Tier","Version","Last Updated"]
                     if c in _gdf.columns
                 ]].copy()
                 _ge1, _ge2 = st.columns(2)
