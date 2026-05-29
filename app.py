@@ -1955,18 +1955,23 @@ def _check_cve(row, context):
     per package for detailed scoring.)
     """
     cves = str(row.get("CVEs", "") or "")
-    if cves in ("None", "—", "", "Timeout", "Error"):
+    if cves in ("None", "—", "", "Timeout", "Error", "N/A"):
         return {"severity": "pass",
                 "label":    "No known CVEs",
                 "details":  "OSV.dev + GitHub Advisory DB returned no vulnerabilities"}
-    # Count CVE IDs (typically comma-separated)
+    # Count only properly-formatted CVE/GHSA IDs
     cve_count = sum(1 for c in cves.split(",") if c.strip().startswith(("CVE", "GHSA")))
+    if cve_count == 0:
+        # Non-empty field but no recognisable CVE IDs — treat as unverified, not a confirmed vuln
+        return {"severity": "low",
+                "label":    "CVE data unrecognised",
+                "details":  f"CVE field contains unrecognised format: {cves[:120]}"}
     if cve_count >= 3:
         return {"severity": "critical",
                 "label":    f"{cve_count}+ CVEs",
                 "details":  f"Multiple known vulnerabilities: {cves[:120]}"}
     return {"severity": "high",
-            "label":    "CVE found",
+            "label":    f"{cve_count} CVE found",
             "details":  f"Known vulnerability: {cves[:120]}"}
 
 # ─── Check 4 — Bus Factor ────────────────────────────────────────────────────
@@ -2000,6 +2005,10 @@ def _check_country(row, context):
                 "label":    "Country unverified",
                 "details":  "Country could not be resolved — informational only"}
     tier = _country_tier(country)
+    if "Unrated" in tier:
+        return {"severity": "low",
+                "label":    "Country unverified",
+                "details":  f"Country '{country}' could not be resolved to a risk tier — informational only"}
     if "Restricted" in tier:
         return {"severity": "critical",
                 "label":    f"Restricted ({country})",
@@ -2541,9 +2550,9 @@ def _risk_score(row, rules=None) -> int:
     lr = row.get("License Risk", "") or _license_risk(row.get("License", ""))
     if "Safe" in lr:                  score += 20
     elif "Copyleft" in lr or "Other" in lr: score += 10
-    # CVE
+    # CVE — also treat Timeout/Error/N/A as no confirmed CVEs for scoring purposes
     cves = str(row.get("CVEs", "") or "")
-    if cves in ("None", "—", ""):     score += 20
+    if cves in ("None", "—", "", "Timeout", "Error", "N/A"):     score += 20
     # Country tier (only if country has been resolved)
     ct = row.get("Country Tier", "") or _country_tier(row.get("Country", ""))
     if "Trusted" in ct:    score += 15
