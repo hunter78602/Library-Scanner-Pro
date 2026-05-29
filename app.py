@@ -6743,19 +6743,106 @@ if "scan_data" in st.session_state:
                         )
 
             # ── Standard exports ──────────────────────────────────────────────
-            # Use disp_df (which includes the Status column) for all exports
-            # so downloaded files match exactly what the user sees on screen.
+            # Build a single enriched frame that merges package data with
+            # country intelligence (if already resolved in Tab 2).
             st.markdown("---")
-            json_str = _clean_for_json_export(disp_df)
-            e1,e2,e3 = st.columns(3)
-            e1.download_button("⬇ Export CSV",  disp_df.to_csv(index=False),
-                               "registry_scan.csv","text/csv", use_container_width=True)
-            e2.download_button("⬇ Export JSON", json_str,
-                               "registry_scan.json","application/json", use_container_width=True)
+
+            # Merge country data when available — keyed on Library + Registry
+            _export_base = disp_df.copy()
+            _geo_cached  = st.session_state.get("country_df")
+            if _geo_cached is not None and "Country" in _geo_cached.columns:
+                _country_cols = [c for c in ["Library", "Registry", "Country", "Country Tier"]
+                                 if c in _geo_cached.columns]
+                _country_merge = _geo_cached[_country_cols].drop_duplicates(
+                    subset=["Library", "Registry"], keep="first"
+                )
+                # Drop pre-existing country cols to avoid _x/_y suffixes
+                for _cc in ("Country", "Country Tier"):
+                    if _cc in _export_base.columns:
+                        _export_base = _export_base.drop(columns=[_cc])
+                _export_base = _export_base.merge(
+                    _country_merge, on=["Library", "Registry"], how="left"
+                )
+                for _cc in ("Country", "Country Tier"):
+                    if _cc in _export_base.columns:
+                        _export_base[_cc] = _export_base[_cc].fillna("Unknown")
+
+            # ── CSV export: fixed logical column order ──────────────────────
+            _csv_col_order = [
+                # Identity
+                "Library", "Registry", "Version",
+                # Activity
+                "Status", "Last Updated", "Downloads",
+                # Maintainer
+                "Maintainer", "Single Maintainer",
+                # Country intelligence
+                "Country", "Country Tier",
+                # Code quality
+                "License", "License Risk", "CVEs",
+                # Risk
+                "Risk", "Risk Score",
+                # Other
+                "Repo", "Custom Flags",
+            ]
+            _csv_cols = [c for c in _csv_col_order if c in _export_base.columns]
+            # Append any remaining columns not in the ordered list
+            _csv_cols += [c for c in _export_base.columns if c not in _csv_cols]
+            _csv_export = _export_base[_csv_cols]
+
+            # ── JSON export: structured sections ───────────────────────────
+            _strip_emoji_fn = lambda v: re.sub(r'^[^\x00-\x7F\s]+\s*', '', str(v)).strip() \
+                                        if isinstance(v, str) else v
+            _json_records = []
+            for _, _r in _export_base.iterrows():
+                _country_val = _r.get("Country", "Unknown") or "Unknown"
+                _tier_val    = _r.get("Country Tier", "") or ""
+                _tier_clean  = re.sub(r'^[^\x00-\x7F\s]+\s*', '', str(_tier_val)).strip()
+                _rec = {
+                    "package_info": {
+                        "library":   str(_r.get("Library",   "") or ""),
+                        "registry":  str(_r.get("Registry",  "") or ""),
+                        "version":   str(_r.get("Version",   "") or ""),
+                        "repo":      str(_r.get("Repo",      "") or ""),
+                        "license":   str(_r.get("License",   "") or ""),
+                        "downloads": _r.get("Downloads", None),
+                        "last_updated": str(_r.get("Last Updated", "") or ""),
+                        "status":    _strip_emoji_fn(_r.get("Status", "")),
+                    },
+                    "maintainer": {
+                        "name":           str(_r.get("Maintainer",       "") or ""),
+                        "single_flag":    _strip_emoji_fn(_r.get("Single Maintainer", "")),
+                    },
+                    "country_intelligence": {
+                        "country":    str(_country_val),
+                        "tier":       _tier_clean if _tier_clean else "Unknown",
+                    },
+                    "risk_assessment": {
+                        "risk_band":     _strip_emoji_fn(_r.get("Risk",         "")),
+                        "risk_score":    _r.get("Risk Score", None),
+                        "license_risk":  _strip_emoji_fn(_r.get("License Risk", "")),
+                        "cves":          str(_r.get("CVEs", "") or ""),
+                        "custom_flags":  str(_r.get("Custom Flags", "") or ""),
+                    },
+                }
+                _json_records.append(_rec)
+            _json_str = json.dumps(
+                {"scan_results": _json_records,
+                 "total_packages": len(_json_records)},
+                indent=2, ensure_ascii=False
+            )
+
+            e1, e2, e3 = st.columns(3)
+            e1.download_button("⬇ Export CSV",  _csv_export.to_csv(index=False),
+                               "registry_scan.csv", "text/csv",
+                               use_container_width=True)
+            e2.download_button("⬇ Export JSON", _json_str,
+                               "registry_scan.json", "application/json",
+                               use_container_width=True)
             if not vuln_rows.empty:
                 e3.download_button("🚨 Vulnerability Report",
                                    vuln_rows.to_csv(index=False),
-                                   "vulnerabilities.csv","text/csv", use_container_width=True)
+                                   "vulnerabilities.csv", "text/csv",
+                                   use_container_width=True)
 
         # ════════════════════════════════════════════════════════════════════
         # TAB 2 — Supply Chain Risk Analysis (basic version)
