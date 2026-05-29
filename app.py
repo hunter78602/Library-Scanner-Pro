@@ -1883,7 +1883,7 @@ def _check_account_age(row, context):
         gh_owner = _extract_gh_username(row.get("Maintainer", "") or "")
     if not gh_owner:
         return {"severity": "low",
-                "label":    "🟢 No maintainer to verify",
+                "label":    "No maintainer to verify",
                 "details":  "Maintainer field empty — cannot fetch account age"}
 
     # Cache key in session_state so multiple checks share lookups
@@ -1909,22 +1909,22 @@ def _check_account_age(row, context):
     days = age.get("days")
     if days is None:
         return {"severity": "low",
-                "label":    "🟢 Age unknown",
+                "label":    "Age unknown",
                 "details":  f"Could not fetch account age for {gh_owner}"}
     if days < 30:
         return {"severity": "critical",
-                "label":    f"🔴 Account only {days}d old",
+                "label":    f"Account only {days}d old",
                 "details":  f"GitHub account {gh_owner} is less than 30 days old — high risk of namespace squat / hijack"}
     if days < 180:
         return {"severity": "high",
-                "label":    f"🟠 New account ({days}d)",
+                "label":    f"New account ({days}d)",
                 "details":  f"GitHub account {gh_owner} is less than 6 months old"}
     if days < 730:
         return {"severity": "medium",
-                "label":    f"🟡 Account {round(days/365,1)}y old",
+                "label":    f"Account {round(days/365,1)}y old",
                 "details":  f"GitHub account {gh_owner} is between 6m and 2y old"}
     return {"severity": "pass",
-            "label":    f"🟢 {round(days/365,1)}y old",
+            "label":    f"{round(days/365,1)}y old",
             "details":  f"GitHub account {gh_owner} is mature ({days} days old)"}
 
 # ─── Check 2 — Abandoned Package ─────────────────────────────────────────────
@@ -1933,18 +1933,18 @@ def _check_abandoned(row, context):
     status = row.get("Status", "") or _pkg_status(row.get("Last Updated", ""))
     if "Abandoned" in status:
         return {"severity": "critical",
-                "label":    "🔴 Abandoned (2y+ stale)",
+                "label":    "Abandoned (2y+ stale)",
                 "details":  f"Last updated {row.get('Last Updated','—')} — no maintenance in over 2 years"}
     if "Aging" in status:
         return {"severity": "medium",
-                "label":    "🟡 Aging (6m–2y)",
+                "label":    "Aging (6m–2y)",
                 "details":  f"Last updated {row.get('Last Updated','—')} — slowing maintenance"}
     if "Unknown" in status:
         return {"severity": "low",
-                "label":    "🟢 Status unknown",
+                "label":    "Status unknown",
                 "details":  "Registry did not provide a last-updated date"}
     return {"severity": "pass",
-            "label":    "🟢 Active",
+            "label":    "Active",
             "details":  f"Last updated {row.get('Last Updated','—')} — within 6 months"}
 
 # ─── Check 3 — Known CVE ─────────────────────────────────────────────────────
@@ -1957,16 +1957,16 @@ def _check_cve(row, context):
     cves = str(row.get("CVEs", "") or "")
     if cves in ("None", "—", "", "Timeout", "Error"):
         return {"severity": "pass",
-                "label":    "🟢 No known CVEs",
+                "label":    "No known CVEs",
                 "details":  "OSV.dev + GitHub Advisory DB returned no vulnerabilities"}
     # Count CVE IDs (typically comma-separated)
     cve_count = sum(1 for c in cves.split(",") if c.strip().startswith(("CVE", "GHSA")))
     if cve_count >= 3:
         return {"severity": "critical",
-                "label":    f"🔴 {cve_count}+ CVEs",
+                "label":    f"{cve_count}+ CVEs",
                 "details":  f"Multiple known vulnerabilities: {cves[:120]}"}
     return {"severity": "high",
-            "label":    f"🟠 CVE found",
+            "label":    "CVE found",
             "details":  f"Known vulnerability: {cves[:120]}"}
 
 # ─── Check 4 — Bus Factor ────────────────────────────────────────────────────
@@ -1978,17 +1978,17 @@ def _check_bus_factor(row, context):
     if "Bus Factor" in sm:
         if downloads >= 10_000_000:
             return {"severity": "critical",
-                    "label":    "🔴 Bus Factor: ≤5 maint + 10M+ dl",
+                    "label":    "Bus Factor: ≤5 maint + 10M+ dl",
                     "details":  f"≤5 maintainers for a package with {row.get('Downloads','')} downloads — left-pad/event-stream risk"}
         return {"severity": "high",
-                "label":    "🟠 Bus Factor (≤5 maintainers)",
+                "label":    "Bus Factor (≤5 maintainers)",
                 "details":  f"≤5 maintainers + {row.get('Downloads','')} downloads"}
     if "Solo" in sm:
         return {"severity": "medium",
-                "label":    "🟡 Small team (moderate dl)",
+                "label":    "Small team (moderate dl)",
                 "details":  f"≤5 maintainers with {row.get('Downloads','')} downloads"}
     return {"severity": "pass",
-            "label":    "🟢 Healthy maintainer count",
+            "label":    "Healthy maintainer count",
             "details":  "More than 5 maintainers with publish rights"}
 
 # ─── Check 5 — Restricted Geographic Origin ──────────────────────────────────
