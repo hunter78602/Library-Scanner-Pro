@@ -948,7 +948,7 @@ _KNOWN_ORG_COUNTRY: dict[str, str] = {
     "pallets":"United States","jupyter":"United States","jupyterlab":"United States",
     "rails":"United States","rubygems":"United States","ruby":"United States",
     "expressjs":"United States","webpack":"United States","babel":"United States",
-    "lodash":"United States","gatsbyjs":"United States","prisma":"United States",
+    "gatsbyjs":"United States","prisma":"United States",
     "supabase":"United States","mongodb":"United States","postgres":"United States",
     "postgresql":"United States","redis":"United States","memcached":"United States",
     "axios":"United States","sindresorhus":"United States","substack":"United States",
@@ -1159,10 +1159,19 @@ _KNOWN_ORG_COUNTRY: dict[str, str] = {
     # Composables
     "composablehorizons":"United Kingdom",
     "io-getquill":"United States","getquill":"United States",
+    # Community orgs — no single country, contributors worldwide
+    # Explicitly marking these "Unknown" blocks the repo-search fallback from
+    # assigning a false country via an unrelated popular repo.
+    "definitelytyped":"Unknown",        # TypeScript types — global community
+    "types":"Unknown",                  # @types/* packages — global community
+    "webjars":"Unknown",                # WebJars — Maven wrappers, no country
+    "jsr":"Unknown",                    # JSR spec orgs
+    "tc39":"Unknown",                   # ECMAScript committee — global
 }
 
 @st.cache_data(ttl=7200, show_spinner=False)
-def _fetch_github_country(username: str, token: str = "") -> str:
+def _fetch_github_country(username: str, token: str = "",
+                          _skip_hardcode: bool = False) -> str:
     """
     Return the normalised country for a GitHub username.
 
@@ -1174,6 +1183,17 @@ def _fetch_github_country(username: str, token: str = "") -> str:
       0. Curated known-orgs map  — overrides for big tech with unreliable profiles
       1. SQLite persistent cache — 24-hour TTL (survives restarts)
       2. GitHub API call         — last resort, tries multiple variants
+
+    _skip_hardcode=True: used by _country_via_repo_search so it reads the live
+    GitHub location only, never inheriting a hardcoded country for an unrelated
+    popular org (e.g. avoids 'lodash/lodash' → _KNOWN_ORG_COUNTRY → US).
+
+    IMPORTANT — confirmed-found rule:
+    If the GitHub API returns HTTP 200 for any variant but the location field is
+    empty or unrecognisable, this function returns "Unknown" immediately and does
+    NOT signal the caller to run a repo-search fallback.  The maintainer's profile
+    exists — their location is simply not public.  Repo-search cannot improve on
+    that and would only produce false results from unrelated popular repos.
     """
     if not username or username in ("—", ""):
         return "Unknown"
@@ -1181,7 +1201,10 @@ def _fetch_github_country(username: str, token: str = "") -> str:
     # 0. Known-org override — protects against unreliable GitHub profile data.
     #    Example: github.com/facebook has empty location → API says "Unknown",
     #    but Meta is clearly USA-based.  Without this, React shows "Unknown".
-    if username.lower() in _KNOWN_ORG_COUNTRY:
+    #    Skipped when called from _country_via_repo_search (_skip_hardcode=True)
+    #    to avoid cross-registry contamination (repo search finds lodash/lodash
+    #    → should NOT inherit the JS-ecosystem hardcode for Maven packages).
+    if not _skip_hardcode and username.lower() in _KNOWN_ORG_COUNTRY:
         return _KNOWN_ORG_COUNTRY[username.lower()]
 
     # 1. SQLite persistent cache — but only trust REAL country results.
@@ -1198,18 +1221,23 @@ def _fetch_github_country(username: str, token: str = "") -> str:
     if token:
         headers["Authorization"] = f"Bearer {token}"
 
-    rate_limited = False
+    rate_limited    = False
+    profile_found   = False   # True once any variant returns HTTP 200
     for variant in _username_variants(username):
         try:
             r = requests.get(f"https://api.github.com/users/{variant}",
                              headers=headers, timeout=TIMEOUT)
             if r.status_code == 200:
+                profile_found = True
                 loc     = r.json().get("location") or ""
                 country = _normalize_country(loc)
                 # Only cache REAL countries — never cache "Unknown" so a
                 # subsequent run will retry (e.g. after a normalizer update)
                 if country and country != "Unknown":
                     _country_cache_set(username, country)
+                # Return immediately — even if country is "Unknown".
+                # The profile exists; location is simply not public.
+                # Caller must NOT fall through to repo-search for this case.
                 return country
             if r.status_code in (403, 429):
                 rate_limited = True
@@ -1220,8 +1248,13 @@ def _fetch_github_country(username: str, token: str = "") -> str:
 
     if rate_limited:
         return "⚠️ Rate Limited"   # do NOT cache — retry when limit resets
-    # All variants returned 404 → genuinely no GitHub user for this maintainer.
-    # Intentionally NOT caching this — a future code update may resolve it.
+
+    # All variants returned 404 → no GitHub profile found at all.
+    # Return a special sentinel so _enrich_countries knows repo-search is allowed.
+    # (Different from "Unknown" which means "profile found, location empty".)
+    if not profile_found:
+        return "❓ No Profile"
+
     return "Unknown"
 
 def _extract_gh_username(maintainer: str) -> str:
@@ -1462,20 +1495,29 @@ def _enrich_countries(df, github_token: str = "") -> "pd.DataFrame":
     #   1. _gh_owner       (from adapter — most accurate when available)
     #   2. uname           (extracted from Maintainer text)
     #   3. pkg_org         (well-known package → canonical GitHub org map)
-    #   4. repo search     (queued for parallel fallback below)
+    #   4. repo search     (ONLY when no GitHub profile was found at all)
+    #
+    # KEY RULE: "Unknown" means a profile WAS found but location is not public.
+    #           "❓ No Profile" means no GitHub profile exists for any variant.
+    # Repo-search is only allowed for "❓ No Profile" — never for "Unknown".
+    # This prevents popular repos (lodash/lodash, etc.) from being used as a
+    # false country source for unrelated packages on other registries.
     countries          = []
     repo_search_queue  = []   # (row_index, library_name)
-    _BAD = {"Unknown", "⚠️ Rate Limited", "", None}
+    _BAD         = {"Unknown", "⚠️ Rate Limited", "", None}
+    _NO_PROFILE  = {"❓ No Profile", "Unknown", "⚠️ Rate Limited", "", None}
     for i, c in enumerate(candidates):
-        country = "Unknown"
+        country = "❓ No Profile"
         if c["gh_owner"]:
-            country = name_to_country.get(c["gh_owner"], "Unknown")
-        if country in _BAD and c["uname"]:
-            country = name_to_country.get(c["uname"], "Unknown")
-        if country in _BAD and c["pkg_org"]:
-            country = name_to_country.get(c["pkg_org"], "Unknown")
-        if country in _BAD and c["lib"] and len(c["lib"]) >= 3:
-            # Mark for repo-search fallback (parallel below)
+            country = name_to_country.get(c["gh_owner"], "❓ No Profile")
+        if country in _NO_PROFILE and c["uname"]:
+            country = name_to_country.get(c["uname"], "❓ No Profile")
+        if country in _NO_PROFILE and c["pkg_org"]:
+            country = name_to_country.get(c["pkg_org"], "❓ No Profile")
+
+        # Only trigger repo-search when NO GitHub profile was found at all.
+        # "Unknown" = profile exists, location private → accept as final answer.
+        if country == "❓ No Profile" and c["lib"] and len(c["lib"]) >= 3:
             repo_search_queue.append((i, c["lib"]))
             countries.append("Unknown")    # placeholder, may be overridden
         else:
@@ -1539,8 +1581,11 @@ def _country_via_repo_search(pkg_name: str, token: str = "") -> str:
                 continue
             owner = (item.get("owner") or {}).get("login", "")
             if owner:
-                country = _fetch_github_country(owner, token)
-                if country not in ("Unknown", "⚠️ Rate Limited"):
+                # _skip_hardcode=True: read live GitHub location only.
+                # Prevents inheriting a hardcoded country for a popular org
+                # that has nothing to do with the package being searched.
+                country = _fetch_github_country(owner, token, _skip_hardcode=True)
+                if country not in ("Unknown", "⚠️ Rate Limited", "❓ No Profile"):
                     return country
     except Exception:
         pass
