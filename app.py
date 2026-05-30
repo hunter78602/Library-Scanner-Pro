@@ -1,44 +1,44 @@
-﻿import streamlit as st
+import streamlit as st
 import re
 import requests, pandas as pd, json, time, datetime
 import os, pathlib
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import contextmanager
 
-# â”€â”€ psycopg2 (PostgreSQL driver) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ── psycopg2 (PostgreSQL driver) ───────────────────────────────────────────────
 try:
     import psycopg2
     import psycopg2.pool
 except ImportError as _pg_err:
     raise ImportError(
-        "psycopg2 not found â€” install it with:  pip install psycopg2-binary"
+        "psycopg2 not found — install it with:  pip install psycopg2-binary"
     ) from _pg_err
 
-# â”€â”€ Load .env file if present (optional; falls back to real env vars) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ── Load .env file if present (optional; falls back to real env vars) ──────────
 try:
     from dotenv import load_dotenv as _load_dotenv
     _load_dotenv()
 except ImportError:
     pass  # python-dotenv is optional; set DATABASE_URL in your environment instead
 
-# â”€â”€ Page config â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ── Page config ────────────────────────────────────────────────────────────────
 st.set_page_config(
     page_title="Registry Intelligence Platform",
-    page_icon="ðŸ›¡ï¸",
+    page_icon="🛡️",
     layout="wide",
     initial_sidebar_state="expanded",
 )
 
-# â”€â”€ CSS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ── CSS ────────────────────────────────────────────────────────────────────────
 st.markdown("""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap');
 
-/* â”€â”€ Base â”€â”€ */
+/* ── Base ── */
 .block-container { padding: 0 2rem 3rem !important; max-width: 1500px; }
 html, body, [class*="css"] { font-family: 'Inter', system-ui, sans-serif; }
 
-/* â”€â”€ Hero â”€â”€ */
+/* ── Hero ── */
 .hero {
     background: linear-gradient(160deg, #04070f 0%, #081422 55%, #060d1c 100%);
     border-bottom: 1px solid #12243d;
@@ -65,7 +65,7 @@ html, body, [class*="css"] { font-family: 'Inter', system-ui, sans-serif; }
 .hstat-val { font-size:1.35rem; font-weight:800; color:#06b6d4; line-height:1; }
 .hstat-lbl { font-size:0.65rem; color:#4a6580; text-transform:uppercase; letter-spacing:0.8px; margin-top:0.15rem; }
 
-/* â”€â”€ Form â”€â”€ */
+/* ── Form ── */
 div[data-testid="stForm"] {
     background:#070d1b !important; border:1px solid #12243d !important;
     border-radius:14px !important; padding:1.4rem 1.6rem !important;
@@ -77,7 +77,7 @@ div[data-testid="stForm"] textarea {
 }
 div[data-testid="stForm"] textarea:focus { border-color:#06b6d4 !important; box-shadow:0 0 0 2px rgba(6,182,212,0.1) !important; }
 
-/* â”€â”€ Scan button â”€â”€ */
+/* ── Scan button ── */
 div[data-testid="stFormSubmitButton"]:first-of-type > button {
     background:linear-gradient(135deg,#035a8e 0%,#06b6d4 100%) !important;
     color:#fff !important; border:none !important; border-radius:10px !important;
@@ -90,7 +90,7 @@ div[data-testid="stFormSubmitButton"]:first-of-type > button:hover {
     transform:translateY(-2px) !important; box-shadow:0 6px 22px rgba(6,182,212,0.38) !important;
 }
 
-/* â”€â”€ KPI metrics â”€â”€ */
+/* ── KPI metrics ── */
 div[data-testid="stMetric"] {
     background:#070d1b; border:1px solid #12243d;
     border-radius:12px; padding:1.1rem 1.3rem; transition:all 0.18s;
@@ -99,10 +99,10 @@ div[data-testid="stMetric"]:hover { border-color:#06b6d4; box-shadow:0 0 18px rg
 div[data-testid="stMetricValue"] { color:#06b6d4 !important; font-size:2.1rem !important; font-weight:800 !important; }
 div[data-testid="stMetricLabel"] { color:#4a7090 !important; font-size:0.7rem !important; text-transform:uppercase; letter-spacing:1px; font-weight:700 !important; }
 
-/* â”€â”€ Table â”€â”€ */
+/* ── Table ── */
 div[data-testid="stDataFrame"] { border:1px solid #12243d !important; border-radius:12px !important; overflow:hidden !important; }
 
-/* â”€â”€ Vuln card â”€â”€ */
+/* ── Vuln card ── */
 .vuln-card {
     background:rgba(239,68,68,0.04); border:1px solid rgba(239,68,68,0.18);
     border-left:3px solid #ef4444; border-radius:10px;
@@ -117,7 +117,7 @@ div[data-testid="stDataFrame"] { border:1px solid #12243d !important; border-rad
     padding:0.2rem 0.5rem; border-radius:4px; display:inline-block;
 }
 
-/* â”€â”€ Download buttons â”€â”€ */
+/* ── Download buttons ── */
 div[data-testid="stDownloadButton"] > button {
     background:#070d1b !important; border:1px solid #12243d !important;
     color:#4a7090 !important; border-radius:8px !important;
@@ -129,12 +129,12 @@ div[data-testid="stDownloadButton"] > button:hover {
     background:rgba(6,182,212,0.05) !important;
 }
 
-/* â”€â”€ Alert / expander â”€â”€ */
+/* ── Alert / expander ── */
 div[data-testid="stAlert"] { border-radius:10px !important; font-size:0.88rem !important; }
 div[data-testid="stExpander"] { border:1px solid #12243d !important; border-radius:10px !important; background:#070d1b !important; }
 summary { color:#4a7090 !important; font-size:0.83rem !important; }
 
-/* â”€â”€ Sidebar â”€â”€ */
+/* ── Sidebar ── */
 section[data-testid="stSidebar"] { background:#060c18 !important; border-right:1px solid #162030 !important; }
 section[data-testid="stSidebar"] .stTextInput input {
     background:#0a1525 !important; border-color:#1e3350 !important;
@@ -142,7 +142,7 @@ section[data-testid="stSidebar"] .stTextInput input {
 }
 section[data-testid="stSidebar"] label { color:#5a89a8 !important; font-size:0.78rem !important; }
 
-/* â”€â”€ Sidebar section label â”€â”€ */
+/* ── Sidebar section label ── */
 .sb-label {
     font-size:0.65rem; font-weight:800; text-transform:uppercase;
     letter-spacing:2px; color:#2e6080;
@@ -150,7 +150,7 @@ section[data-testid="stSidebar"] label { color:#5a89a8 !important; font-size:0.7
     border-bottom:1px solid #162030;
 }
 
-/* â”€â”€ Registry row â”€â”€ */
+/* ── Registry row ── */
 .reg-row {
     display:flex; align-items:center; gap:0.5rem;
     padding:0.3rem 0; font-size:0.78rem;
@@ -163,7 +163,7 @@ section[data-testid="stSidebar"] label { color:#5a89a8 !important; font-size:0.7
 .reg-name { color:#6aaac8; font-weight:600; }
 .reg-desc { color:#2e6080; font-size:0.7rem; }
 
-/* â”€â”€ Section label â”€â”€ */
+/* ── Section label ── */
 .sec-label {
     font-size:0.68rem; font-weight:700; text-transform:uppercase;
     letter-spacing:1.5px; color:#2e6080;
@@ -173,11 +173,11 @@ section[data-testid="stSidebar"] label { color:#5a89a8 !important; font-size:0.7
 </style>
 """, unsafe_allow_html=True)
 
-# â”€â”€ Constants â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ── Constants ──────────────────────────────────────────────────────────────────
 SEARCH_LIMIT = 4
 TIMEOUT      = 9
 
-# â”€â”€ PostgreSQL connection â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ── PostgreSQL connection ───────────────────────────────────────────────────────
 # Set DATABASE_URL in your .env file or as an environment variable.
 # Local:      postgresql://postgres:postgres@localhost:5432/registry_intel
 # Production: set DATABASE_URL to your cloud provider's connection string
@@ -208,7 +208,7 @@ def _pg_conn():
     finally:
         pool.putconn(conn)
 
-# â”€â”€ HTML markdown helper â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ── HTML markdown helper ───────────────────────────────────────────────────────
 # st.markdown still runs Markdown before rendering HTML. Any line that starts
 # with 4 or more spaces is treated as a Markdown code block and the HTML tags
 # inside it appear as raw text instead of being rendered. This helper collapses
@@ -218,7 +218,7 @@ def _md(html: str) -> None:
     st.markdown(re.sub(r"(?m)^( {4,})", lambda m: " " * min(len(m.group(1)), 3), html),
                 unsafe_allow_html=True)
 
-# â”€â”€ PostgreSQL cache & persistence â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ── PostgreSQL cache & persistence ─────────────────────────────────────────────
 def _init_db():
     """Create all application tables if they do not already exist."""
     with _pg_conn() as conn:
@@ -231,7 +231,7 @@ def _init_db():
                 ts   FLOAT8  NOT NULL
             )
         """)
-        # GitHub username â†’ country lookup cache (24 h TTL)
+        # GitHub username → country lookup cache (24 h TTL)
         cur.execute("""
             CREATE TABLE IF NOT EXISTS country_cache (
                 username TEXT PRIMARY KEY,
@@ -247,7 +247,7 @@ def _init_db():
                 saved_at FLOAT8 NOT NULL
             )
         """)
-        # Completed scan history â€” packages + raised queries + risk summary
+        # Completed scan history — packages + raised queries + risk summary
         cur.execute("""
             CREATE TABLE IF NOT EXISTS scan_history (
                 id             SERIAL PRIMARY KEY,
@@ -378,7 +378,7 @@ def save_scan_history(audit_rows: list, raised_queries: list, summary: dict):
         with _pg_conn() as conn:
             cur = conn.cursor()
 
-            # Deduplication check â€” same package set scanned in the last 5 min?
+            # Deduplication check — same package set scanned in the last 5 min?
             cur.execute(
                 """SELECT id FROM scan_history
                    WHERE summary->>'_fingerprint' = %s
@@ -388,7 +388,7 @@ def save_scan_history(audit_rows: list, raised_queries: list, summary: dict):
             )
             if cur.fetchone():
                 cur.close()
-                return   # duplicate â€” skip
+                return   # duplicate — skip
 
             # Embed fingerprint in summary so the dedup query works
             summary_stored = dict(summary)
@@ -409,19 +409,19 @@ def save_scan_history(audit_rows: list, raised_queries: list, summary: dict):
 
 _init_db()
 
-# â”€â”€ Per-package profile cache (PostgreSQL â€” replaces profile_cache/*.json) â”€â”€â”€â”€â”€
-# Per-field TTLs (seconds) â€” unchanged from the file-based version
+# ── Per-package profile cache (PostgreSQL — replaces profile_cache/*.json) ─────
+# Per-field TTLs (seconds) — unchanged from the file-based version
 _FIELD_TTL = {
-    "contrib_intel":     7 * 86400,  # 7 days  â€” LinkedIn, orgs, 2FA (identity)
-    "owner_prof":        7 * 86400,  # 7 days  â€” org/user profile
-    "maint_gh_profiles": 7 * 86400,  # 7 days  â€” individual maintainer profiles
-    "openssf":               86400,  # 1 day   â€” scorecard refreshed weekly
-    "raw_maintainers":       86400,  # 1 day   â€” registry maintainer list
-    "owner_repos":           86400,  # 1 day   â€” top repos list
-    "gh_path":               86400,  # 1 day   â€” repo path (rarely changes)
+    "contrib_intel":     7 * 86400,  # 7 days  — LinkedIn, orgs, 2FA (identity)
+    "owner_prof":        7 * 86400,  # 7 days  — org/user profile
+    "maint_gh_profiles": 7 * 86400,  # 7 days  — individual maintainer profiles
+    "openssf":               86400,  # 1 day   — scorecard refreshed weekly
+    "raw_maintainers":       86400,  # 1 day   — registry maintainer list
+    "owner_repos":           86400,  # 1 day   — top repos list
+    "gh_path":               86400,  # 1 day   — repo path (rarely changes)
     "handle":                86400,  # 1 day
-    "repo_info":              3600,  # 1 hour  â€” stars/forks change often
-    "repo_cmts":              3600,  # 1 hour  â€” commits happen daily
+    "repo_info":              3600,  # 1 hour  — stars/forks change often
+    "repo_cmts":              3600,  # 1 hour  — commits happen daily
     "last_commit_date":       3600,  # 1 hour
 }
 
@@ -469,7 +469,7 @@ def _save_json_cache(pkg_name: str, reg_name: str, cache: dict):
 
 
 def _jcache_get(cache: dict, field: str):
-    """Return (value, is_fresh). is_fresh=True means within TTL â†’ skip API call."""
+    """Return (value, is_fresh). is_fresh=True means within TTL → skip API call."""
     entry = cache.get(field)
     if not isinstance(entry, dict):
         return None, False
@@ -518,7 +518,7 @@ def _migrate_cache():
 
 _migrate_cache()
 
-# â”€â”€ Utilities â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ── Utilities ──────────────────────────────────────────────────────────────────
 def _exact_match(q, name):
     q = q.lower().strip(); n = name.lower().strip()
     if n == q: return True
@@ -531,36 +531,36 @@ def _is_search(q): return " " in q.strip()
 def _name_match(query: str, result_name: str, threshold: float = 0.55) -> bool:
     """Return True if result_name is a plausible match for the user's query.
 
-    Security-researcher rules â€” NO fuzzy matching, NO arbitrary substring
+    Security-researcher rules — NO fuzzy matching, NO arbitrary substring
     matching. This was the source of false positives like:
-      query "react"  â†’ matched "Win11React"   (substring at end â€” REJECT)
-      query "axios"  â†’ matched "Microsoft.Axios.Foo"  (substring in middle â€” REJECT)
+      query "react"  → matched "Win11React"   (substring at end — REJECT)
+      query "axios"  → matched "Microsoft.Axios.Foo"  (substring in middle — REJECT)
 
     Accept ONLY when:
       1. Exact (case/punctuation insensitive) match
       2. Path-style suffix match: query == name.split('/:.')[ -1 ]
-      3. Name starts with query (e.g. "react" â†’ "react-dom", "reactjs")
+      3. Name starts with query (e.g. "react" → "react-dom", "reactjs")
       4. First word of name (CamelCase-aware) starts with query
-         e.g. "node" â†’ "Node.js"      âœ“ first token "Node" starts with "node"
-              "react" â†’ "Win11React"  âœ— first token "Win11" doesn't
+         e.g. "node" → "Node.js"      ✓ first token "Node" starts with "node"
+              "react" → "Win11React"  ✗ first token "Win11" doesn't
     """
     q = query.lower().strip()
     n = result_name.lower().strip()
     if not q or not n:
         return False
 
-    # Rule 1 â€” exact (case-insensitive)
+    # Rule 1 — exact (case-insensitive)
     if q == n:
         return True
 
-    # Rule 2 â€” path-style suffix: "Mozilla.Firefox" matches "firefox"
+    # Rule 2 — path-style suffix: "Mozilla.Firefox" matches "firefox"
     for sep in ("/", ":", "."):
         if sep in n and n.split(sep)[-1] == q:
             return True
         if sep in q and q.split(sep)[-1] == n:
             return True
 
-    # Rule 3 â€” strip non-alphanumeric, compare again
+    # Rule 3 — strip non-alphanumeric, compare again
     qa = re.sub(r"[^a-z0-9]", "", q)
     na = re.sub(r"[^a-z0-9]", "", n)
     if not qa or not na:
@@ -568,16 +568,16 @@ def _name_match(query: str, result_name: str, threshold: float = 0.55) -> bool:
     if qa == na:
         return True
 
-    # Rule 4 â€” prefix match only (NEVER arbitrary substring/suffix)
-    # Both sides must be â‰¥ 4 chars to avoid noise from short tokens like "ng".
+    # Rule 4 — prefix match only (NEVER arbitrary substring/suffix)
+    # Both sides must be ≥ 4 chars to avoid noise from short tokens like "ng".
     if len(qa) >= 4 and len(na) >= 4:
         if na.startswith(qa) or qa.startswith(na):
             return True
 
-    # Rule 5 â€” first-token (CamelCase-aware) starts with query
-    # "Node.js"   â†’ first token "Node"   â†’ starts with "node"  âœ“
-    # "Win11React"â†’ first token "Win11"  â†’ starts with "win11" âœ— (good)
-    # "react-dom" â†’ first token "react"  â†’ starts with "react" âœ“
+    # Rule 5 — first-token (CamelCase-aware) starts with query
+    # "Node.js"   → first token "Node"   → starts with "node"  ✓
+    # "Win11React"→ first token "Win11"  → starts with "win11" ✗ (good)
+    # "react-dom" → first token "react"  → starts with "react" ✓
     first_token = re.split(r'[\s\-_.:/]|(?<=[a-z0-9])(?=[A-Z])',
                            result_name.strip())[0]
     ft = re.sub(r"[^a-z0-9]", "", first_token.lower())
@@ -587,15 +587,15 @@ def _name_match(query: str, result_name: str, threshold: float = 0.55) -> bool:
     return False
 
 def _trunc(s, n=72):
-    if not s or s == "N/A": return "â€”"
+    if not s or s == "N/A": return "—"
     s = s.strip()
-    return s[:n].rstrip() + ("â€¦" if len(s) > n else "")
+    return s[:n].rstrip() + ("…" if len(s) > n else "")
 
 def _clean_for_json_export(df: "pd.DataFrame") -> str:
     """Return a clean, human-readable JSON string from a results DataFrame.
 
     Fixes two problems that appear in the raw pandas .to_json() output:
-      1. Unicode escapes (Â·, ðŸš¨ â€¦) â€” caused by force_ascii=True default.
+      1. Unicode escapes (·, 🚨 …) — caused by force_ascii=True default.
          Fixed by converting to Python dicts first then json.dumps(ensure_ascii=False).
       2. Emoji prefixes in display columns (Status, Risk, License Risk, etc.).
          Fixed by stripping any leading non-ASCII run + optional space from string values
@@ -616,8 +616,8 @@ def _clean_for_json_export(df: "pd.DataFrame") -> str:
     records = json.loads(clean.to_json(orient="records", force_ascii=False))
     return json.dumps(records, indent=2, ensure_ascii=False)
 
-# â”€â”€ Maintainer Country Intelligence â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-# Maps free-text GitHub location strings â†’ standardised country names.
+# ── Maintainer Country Intelligence ────────────────────────────────────────────
+# Maps free-text GitHub location strings → standardised country names.
 # Covers cities, common abbreviations, and alternate spellings.
 _COUNTRY_NORM: dict[str, str] = {
     # United Kingdom
@@ -629,13 +629,13 @@ _COUNTRY_NORM: dict[str, str] = {
     "leeds":"United Kingdom","liverpool":"United Kingdom","bristol":"United Kingdom",
     "edinburgh":"United Kingdom","glasgow":"United Kingdom","oxford":"United Kingdom",
     "cambridge":"United Kingdom","sheffield":"United Kingdom","nottingham":"United Kingdom",
-    # United States â€” country aliases, then states (full names + 2-letter codes
+    # United States — country aliases, then states (full names + 2-letter codes
     # SCOPED with "us" prefix to disambiguate from country codes like "ca"=Canada),
     # then major cities.
     "us":"United States","usa":"United States","u.s.":"United States","u.s.a.":"United States",
     "united states":"United States","united states of america":"United States",
     "america":"United States",
-    # US states â€” full names (safe to substring-match)
+    # US states — full names (safe to substring-match)
     "california":"United States","texas":"United States","florida":"United States",
     "new york state":"United States","washington state":"United States",
     "massachusetts":"United States","colorado":"United States","oregon":"United States",
@@ -668,8 +668,8 @@ _COUNTRY_NORM: dict[str, str] = {
     "remote, us":"United States","remote, usa":"United States",
     # Germany
     "germany":"Germany","deutschland":"Germany","berlin":"Germany","munich":"Germany",
-    "mÃ¼nchen":"Germany","hamburg":"Germany","frankfurt":"Germany","cologne":"Germany",
-    "kÃ¶ln":"Germany","dÃ¼sseldorf":"Germany","stuttgart":"Germany","leipzig":"Germany",
+    "münchen":"Germany","hamburg":"Germany","frankfurt":"Germany","cologne":"Germany",
+    "köln":"Germany","düsseldorf":"Germany","stuttgart":"Germany","leipzig":"Germany",
     # France
     "france":"France","paris":"France","lyon":"France","marseille":"France","toulouse":"France",
     # India
@@ -696,10 +696,10 @@ _COUNTRY_NORM: dict[str, str] = {
     # South Korea
     "south korea":"South Korea","korea":"South Korea","seoul":"South Korea","busan":"South Korea",
     # Brazil
-    "brazil":"Brazil","sÃ£o paulo":"Brazil","sao paulo":"Brazil","rio de janeiro":"Brazil",
-    "brasÃ­lia":"Brazil","belo horizonte":"Brazil","curitiba":"Brazil",
+    "brazil":"Brazil","são paulo":"Brazil","sao paulo":"Brazil","rio de janeiro":"Brazil",
+    "brasília":"Brazil","belo horizonte":"Brazil","curitiba":"Brazil",
     # Sweden
-    "sweden":"Sweden","stockholm":"Sweden","gothenburg":"Sweden","malmÃ¶":"Sweden",
+    "sweden":"Sweden","stockholm":"Sweden","gothenburg":"Sweden","malmö":"Sweden",
     # Norway
     "norway":"Norway","oslo":"Norway","bergen":"Norway","trondheim":"Norway",
     # Finland
@@ -707,7 +707,7 @@ _COUNTRY_NORM: dict[str, str] = {
     # Denmark
     "denmark":"Denmark","copenhagen":"Denmark","aarhus":"Denmark",
     # Switzerland
-    "switzerland":"Switzerland","zurich":"Switzerland","zÃ¼rich":"Switzerland",
+    "switzerland":"Switzerland","zurich":"Switzerland","zürich":"Switzerland",
     "geneva":"Switzerland","bern":"Switzerland","basel":"Switzerland",
     # Spain
     "spain":"Spain","madrid":"Spain","barcelona":"Spain","valencia":"Spain","seville":"Spain",
@@ -715,7 +715,7 @@ _COUNTRY_NORM: dict[str, str] = {
     "italy":"Italy","rome":"Italy","milan":"Italy","milano":"Italy",
     "turin":"Italy","naples":"Italy","florence":"Italy","bologna":"Italy",
     # Poland
-    "poland":"Poland","warsaw":"Poland","krakÃ³w":"Poland","wrocÅ‚aw":"Poland","gdaÅ„sk":"Poland",
+    "poland":"Poland","warsaw":"Poland","kraków":"Poland","wrocław":"Poland","gdańsk":"Poland",
     # Ukraine
     "ukraine":"Ukraine","kyiv":"Ukraine","kharkiv":"Ukraine","lviv":"Ukraine","odesa":"Ukraine",
     # Israel
@@ -730,7 +730,7 @@ _COUNTRY_NORM: dict[str, str] = {
     "czech republic":"Czech Republic","czechia":"Czech Republic","prague":"Czech Republic",
     "brno":"Czech Republic",
     # Romania
-    "romania":"Romania","bucharest":"Romania","cluj":"Romania","timiÈ™oara":"Romania",
+    "romania":"Romania","bucharest":"Romania","cluj":"Romania","timișoara":"Romania",
     # Belgium
     "belgium":"Belgium","brussels":"Belgium","ghent":"Belgium","antwerp":"Belgium",
     # Austria
@@ -738,7 +738,7 @@ _COUNTRY_NORM: dict[str, str] = {
     # New Zealand
     "new zealand":"New Zealand","auckland":"New Zealand","wellington":"New Zealand",
     # Argentina
-    "argentina":"Argentina","buenos aires":"Argentina","cÃ³rdoba":"Argentina",
+    "argentina":"Argentina","buenos aires":"Argentina","córdoba":"Argentina",
     # Mexico
     "mexico":"Mexico","mexico city":"Mexico","guadalajara":"Mexico","monterrey":"Mexico",
     # South Africa
@@ -749,7 +749,7 @@ _COUNTRY_NORM: dict[str, str] = {
     # Iran
     "iran":"Iran","tehran":"Iran",
     # Turkey
-    "turkey":"Turkey","tÃ¼rkiye":"Turkey","istanbul":"Turkey","ankara":"Turkey",
+    "turkey":"Turkey","türkiye":"Turkey","istanbul":"Turkey","ankara":"Turkey",
     # Egypt
     "egypt":"Egypt","cairo":"Egypt","alexandria":"Egypt",
     # Nigeria
@@ -785,7 +785,7 @@ _COUNTRY_NORM: dict[str, str] = {
     # Estonia
     "estonia":"Estonia","tallinn":"Estonia",
     # Colombia
-    "colombia":"Colombia","bogotÃ¡":"Colombia","medellin":"Colombia",
+    "colombia":"Colombia","bogotá":"Colombia","medellin":"Colombia",
     # Chile
     "chile":"Chile","santiago":"Chile",
     # Peru
@@ -821,10 +821,10 @@ _COUNTRY_NORM: dict[str, str] = {
     # Kazakhstan
     "kazakhstan":"Kazakhstan","almaty":"Kazakhstan",
     # Remote / global
-    "remote":"ðŸŒ Remote / Global","worldwide":"ðŸŒ Remote / Global",
-    "global":"ðŸŒ Remote / Global","earth":"ðŸŒ Remote / Global",
-    "internet":"ðŸŒ Remote / Global","everywhere":"ðŸŒ Remote / Global",
-    # â”€â”€ ISO 3166-1 alpha-2 codes (2-letter) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    "remote":"🌐 Remote / Global","worldwide":"🌐 Remote / Global",
+    "global":"🌐 Remote / Global","earth":"🌐 Remote / Global",
+    "internet":"🌐 Remote / Global","everywhere":"🌐 Remote / Global",
+    # ── ISO 3166-1 alpha-2 codes (2-letter) ──────────────────────────────────
     # These appear on GitHub profiles as "RU", "DE", "FR" etc.
     # Must map to full names so short codes are NEVER displayed in the UI.
     "ru":"Russia","cn":"China","de":"Germany","fr":"France","in":"India",
@@ -860,32 +860,32 @@ _COUNTRY_NORM: dict[str, str] = {
 }
 
 def _normalize_country(location: str) -> str:
-    """Map a free-text GitHub location â†’ standardised country name."""
+    """Map a free-text GitHub location → standardised country name."""
     if not location or not location.strip():
         return "Unknown"
     loc = location.lower().strip()
 
     # Pre-sort aliases once: longest first so more specific matches win
     _sorted = sorted(_COUNTRY_NORM.items(), key=lambda x: -len(x[0]))
-    # Short aliases (â‰¤ 3 chars: "ru", "in", "de", "fr", "it" â€¦) are ONLY
-    # safe as exact tokens â€” never as substrings.
-    # "Bengaluru" contains "ru" â†’ must NOT â†’ Russia.
-    # "Trivandrum" contains "ru" â†’ must NOT â†’ Russia.
-    # "Indiana"   contains "in" â†’ must NOT â†’ India.
+    # Short aliases (≤ 3 chars: "ru", "in", "de", "fr", "it" …) are ONLY
+    # safe as exact tokens — never as substrings.
+    # "Bengaluru" contains "ru" → must NOT → Russia.
+    # "Trivandrum" contains "ru" → must NOT → Russia.
+    # "Indiana"   contains "in" → must NOT → India.
     _short = {a for a in _COUNTRY_NORM if len(a) <= 3}
 
     # 1. Direct full-string exact match
     if loc in _COUNTRY_NORM:
         return _COUNTRY_NORM[loc]
 
-    # 2. Comma-split â€” try each token as an exact match (handles "Bengaluru, India")
+    # 2. Comma-split — try each token as an exact match (handles "Bengaluru, India")
     parts = [p.strip() for p in loc.split(",")]
     for part in reversed(parts):          # last token is usually the country
         if part in _COUNTRY_NORM:
             return _COUNTRY_NORM[part]
 
-    # 3. Substring scan â€” LONG aliases only (> 3 chars)
-    #    "london" in "london, uk" âœ“   "ru" in "bengaluru" âœ— (blocked)
+    # 3. Substring scan — LONG aliases only (> 3 chars)
+    #    "london" in "london, uk" ✓   "ru" in "bengaluru" ✗ (blocked)
     for part in parts:
         for alias, country in _sorted:
             if alias in _short:
@@ -893,14 +893,14 @@ def _normalize_country(location: str) -> str:
             if alias in part:
                 return country
 
-    # 4. Full-string substring scan â€” again long aliases only
+    # 4. Full-string substring scan — again long aliases only
     for alias, country in _sorted:
         if alias in _short:
             continue
         if alias in loc:
             return country
 
-    # 5. No match found â€” always return "Unknown".
+    # 5. No match found — always return "Unknown".
     #    Never display raw location strings (city names, abbreviations, slang).
     #    Only values explicitly listed in _COUNTRY_NORM are shown as country names.
     return "Unknown"
@@ -910,9 +910,9 @@ def _username_variants(name: str) -> list:
     Generate plausible GitHub username variants for a freeform maintainer name.
     Tried in order of likelihood:
       1. Exact (e.g. "google")
-      2. Lowercase (e.g. "Microsoft" â†’ "microsoft")
-      3. No-spaces (e.g. "Mark Finger" â†’ "MarkFinger")
-      4. Hyphenated (e.g. "Mark Finger" â†’ "mark-finger")
+      2. Lowercase (e.g. "Microsoft" → "microsoft")
+      3. No-spaces (e.g. "Mark Finger" → "MarkFinger")
+      4. Hyphenated (e.g. "Mark Finger" → "mark-finger")
       5. First word only (already the default if no spaces present)
     Duplicates are removed while preserving order.
     """
@@ -922,9 +922,9 @@ def _username_variants(name: str) -> list:
     candidates = [
         name,
         name.lower(),
-        re.sub(r"\s+", "", name),               # "Mark Finger" â†’ "MarkFinger"
-        re.sub(r"\s+", "-", name).lower(),       # "Mark Finger" â†’ "mark-finger"
-        re.sub(r"\s+", "_", name).lower(),       # "Mark Finger" â†’ "mark_finger"
+        re.sub(r"\s+", "", name),               # "Mark Finger" → "MarkFinger"
+        re.sub(r"\s+", "-", name).lower(),       # "Mark Finger" → "mark-finger"
+        re.sub(r"\s+", "_", name).lower(),       # "Mark Finger" → "mark_finger"
         name.split()[0] if " " in name else "",  # First word fallback
     ]
     for c in candidates:
@@ -937,10 +937,10 @@ def _username_variants(name: str) -> list:
 # Curated mapping for well-known orgs whose GitHub profile location is
 # unreliable, missing, or generic ("Worldwide", "Internet"). Many large
 # tech companies leave the field blank because they have multiple offices.
-# Without this map, React's "Org Â· facebook" lookup would fail to resolve
+# Without this map, React's "Org · facebook" lookup would fail to resolve
 # even though Meta is clearly headquartered in California, USA.
 _KNOWN_ORG_COUNTRY: dict[str, str] = {
-    # â”€â”€â”€ USA â€” Big Tech, frameworks, runtimes, popular individual maintainers â”€â”€â”€
+    # ─── USA — Big Tech, frameworks, runtimes, popular individual maintainers ───
     "facebook":"United States","meta":"United States","meta-llama":"United States",
     "google":"United States","googlecloudplatform":"United States","googleapis":"United States",
     "googlechrome":"United States","googlechromelabs":"United States",
@@ -990,59 +990,59 @@ _KNOWN_ORG_COUNTRY: dict[str, str] = {
     "formidablelabs":"United States","reduxjs":"United States","reactstrap":"United States",
     "storybookjs":"United States","cypress-io":"United States","jest-community":"United States",
     "facebookresearch":"United States","facebookincubator":"United States",
-    # â”€â”€â”€ UK â”€â”€â”€
+    # ─── UK ───
     "canonical":"United Kingdom","arm":"United Kingdom","deepmind":"United Kingdom",
     "preactjs":"United Kingdom","developit":"United Kingdom",
     "ubuntu":"United Kingdom","raspberrypi":"United Kingdom",
-    # â”€â”€â”€ France â”€â”€â”€
+    # ─── France ───
     "ocaml":"France","ocaml-community":"France","mirage":"France",
     "ovh":"France","scaleway":"France","gitlabhq":"France","dailymotion":"France",
-    # â”€â”€â”€ Germany â”€â”€â”€
+    # ─── Germany ───
     "sap":"Germany","saphanaone":"Germany","contao":"Germany",
     "matomo-org":"Germany","piwik":"Germany","typo3":"Germany",
-    # â”€â”€â”€ Czech Republic â”€â”€â”€
+    # ─── Czech Republic ───
     "jetbrains":"Czech Republic","kotlin":"Czech Republic","jetbrains-research":"Czech Republic",
-    # â”€â”€â”€ Sweden â”€â”€â”€
+    # ─── Sweden ───
     "spotify":"Sweden","klarna":"Sweden","mojang":"Sweden","minecraft":"Sweden",
     "minecrafter":"Sweden",
-    # â”€â”€â”€ Norway â”€â”€â”€
+    # ─── Norway ───
     "opera":"Norway","operasoftware":"Norway",
-    # â”€â”€â”€ Netherlands â”€â”€â”€
+    # ─── Netherlands ───
     "tomtom":"Netherlands","booking":"Netherlands","elastic":"Netherlands",
     "adyen":"Netherlands","mollie":"Netherlands",
-    # â”€â”€â”€ Russia / former USSR â”€â”€â”€
+    # ─── Russia / former USSR ───
     "nginx":"Russia","yandex":"Russia","kaspersky":"Russia","mailru":"Russia",
     "tarantool":"Russia","clickhouse":"Russia",
-    # â”€â”€â”€ China â”€â”€â”€
+    # ─── China ───
     "alibaba":"China","alibabacloud":"China","tencent":"China","baidu":"China",
     "bytedance":"China","huawei":"China","huaweicloud":"China","didi":"China",
     "antdesign":"China","ant-design":"China","element-plus":"China","vuejs":"China",
     "vuetifyjs":"China","quasarframework":"China","element":"China",
-    # â”€â”€â”€ India â”€â”€â”€
+    # ─── India ───
     "redhuntlabs":"India","tcs":"India","infosys":"India","wipro":"India",
     "freshworks":"India","zoho":"India","flipkart":"India","ola":"India",
     "myntra":"India","paytm":"India","razorpay":"India","swiggy":"India",
-    # â”€â”€â”€ Japan â”€â”€â”€
+    # ─── Japan ───
     "lineage":"Japan","mercari":"Japan","sony":"Japan","sonyplaystation":"Japan",
     "rakuten":"Japan","rubykaigi":"Japan","cookpad":"Japan","line":"Japan",
-    # â”€â”€â”€ South Korea â”€â”€â”€
+    # ─── South Korea ───
     "kakao":"South Korea","navercorp":"South Korea","samsung":"South Korea",
     "lge":"South Korea",
-    # â”€â”€â”€ Australia â”€â”€â”€
+    # ─── Australia ───
     "atlassian":"Australia","canva":"Australia","camjackson":"Australia",
     "envato":"Australia","abc":"Australia",
-    # â”€â”€â”€ Canada â”€â”€â”€
+    # ─── Canada ───
     "shopify":"Canada","slack":"Canada","hootsuite":"Canada","blackberry":"Canada",
-    # â”€â”€â”€ Switzerland â”€â”€â”€
+    # ─── Switzerland ───
     "google-deepmind":"Switzerland","cern":"Switzerland","openzeppelin":"Switzerland",
-    # â”€â”€â”€ Finland â”€â”€â”€
+    # ─── Finland ───
     "nokia":"Finland","supercell":"Finland","linus":"Finland","linuxfoundation":"Finland",
-    # â”€â”€â”€ Spain â”€â”€â”€
+    # ─── Spain ───
     "telefonica":"Spain","glovo":"Spain",
-    # â”€â”€â”€ Italy â”€â”€â”€
+    # ─── Italy ───
     "ferrari":"Italy","luigi":"Italy",
-    # â”€â”€â”€ ADDITIONAL VERIFIED ENTRIES (from real-world scan data) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-    # USA â€” popular JS/CSS libraries and individual maintainers
+    # ─── ADDITIONAL VERIFIED ENTRIES (from real-world scan data) ────────────
+    # USA — popular JS/CSS libraries and individual maintainers
     "twbs":"United States",                    # Bootstrap
     "jquery":"United States",                  # jQuery Foundation
     "jqueryfoundation":"United States",
@@ -1054,7 +1054,7 @@ _KNOWN_ORG_COUNTRY: dict[str, str] = {
     "kevin-brown":"United States",
     "kenwheeler":"United States",              # Slick carousel
     "zenorocha":"United States",               # Clipboard.js
-    "mrdoob":"Spain",                          # Three.js â€” Ricardo Cabello
+    "mrdoob":"Spain",                          # Three.js — Ricardo Cabello
     "three":"Spain","threejs":"Spain",
     "greensock":"United States",               # GSAP
     "lit":"United States","lit-element":"United States","lit-html":"United States",
@@ -1063,35 +1063,35 @@ _KNOWN_ORG_COUNTRY: dict[str, str] = {
     "expressjs":"United States","koajs":"United States",
     "feross":"United States","webtorrent":"United States",
     "ant-design":"China","alipay":"China","alipay-com":"China",
-    "fancyapps":"Lithuania",                   # Fancybox â€” Janis Skarnelis
+    "fancyapps":"Lithuania",                   # Fancybox — Janis Skarnelis
     "ckeditor":"Poland","ckeditor4":"Poland","ckeditor5":"Poland",
     "tinymce":"Sweden","ephox":"Sweden",
     "froala":"Romania","froalalabs":"Romania",
     "froala-labs":"Romania",
-    "splidejs":"Japan",                        # Splide â€” Naotoshi Fujita
+    "splidejs":"Japan",                        # Splide — Naotoshi Fujita
     "naotoshifujita":"Japan",
     "splide":"Japan",
-    "nolimits4web":"Belarus",                  # Swiper â€” Vladimir Kharlampidi
+    "nolimits4web":"Belarus",                  # Swiper — Vladimir Kharlampidi
     "swiperjs":"Belarus","framework7io":"Belarus",
-    "aFarkas":"Germany","afarkas":"Germany",   # Lazysizes â€” Alexander Farkas
-    "hammerjs":"Netherlands","eightmedia":"Netherlands",  # Hammer.js â€” Jorik Tangelder
+    "aFarkas":"Germany","afarkas":"Germany",   # Lazysizes — Alexander Farkas
+    "hammerjs":"Netherlands","eightmedia":"Netherlands",  # Hammer.js — Jorik Tangelder
     "jorik":"Netherlands",
-    "marijnh":"Netherlands","codemirror":"Netherlands",   # CodeMirror â€” Marijn Haverbeke
+    "marijnh":"Netherlands","codemirror":"Netherlands",   # CodeMirror — Marijn Haverbeke
     "prosemirror":"Netherlands",
     "emotion-js":"United States","threepointone":"United States",  # Emotion CSS-in-JS
-    "mxstbr":"Germany","styled-components":"United States",  # Max Stoiber â€” but team is global
-    "chartjs":"Canada",                        # Chart.js â€” Will Bird et al.
+    "mxstbr":"Germany","styled-components":"United States",  # Max Stoiber — but team is global
+    "chartjs":"Canada",                        # Chart.js — Will Bird et al.
     "willbird":"Canada",
     "datatables":"United Kingdom",             # Allan Jardine
     "allanjardine":"United Kingdom",
-    "socketio":"United States",                # Socket.IO â€” Guillermo Rauch
+    "socketio":"United States",                # Socket.IO — Guillermo Rauch
     "rauchg":"United States","vercel":"United States",
     "automerge":"United Kingdom",
-    "dropzone":"Germany",                      # Dropzone â€” Matias Meno (Berlin)
+    "dropzone":"Germany",                      # Dropzone — Matias Meno (Berlin)
     "matiasmeno":"Germany",
     "lazysizes":"Germany",
     "components":"United States",              # GitHub "components" maintenance org
-    "webjars":"United States",                 # WebJars â€” Sonatype
+    "webjars":"United States",                 # WebJars — Sonatype
     "sonatype":"United States",
     "spring-projects":"United States",
     "fasterxml":"United States",
@@ -1100,7 +1100,7 @@ _KNOWN_ORG_COUNTRY: dict[str, str] = {
     # Ukraine
     "redhuntlabs":"India","macpaw":"Ukraine","macpaw-research":"Ukraine",
     "galetahub":"Ukraine",
-    # NOTE: zloirock (Denis Pushkarev, core-js) â€” removed override.
+    # NOTE: zloirock (Denis Pushkarev, core-js) — removed override.
     # His current GitHub location is "Cyprus, Larnaca" so the API + the
     # _COUNTRY_NORM "cyprus" entry resolves it correctly to Cyprus.
     # The override would have incorrectly forced "Russia" (his nationality,
@@ -1130,8 +1130,8 @@ _KNOWN_ORG_COUNTRY: dict[str, str] = {
     "markedjs":"United Kingdom","chjj":"United States",
     # Closure
     "google-closure-library":"United States",
-    # AOS â€” Animate On Scroll
-    "michalsnik":"Poland",                     # MichaÅ‚ SajnÃ³g
+    # AOS — Animate On Scroll
+    "michalsnik":"Poland",                     # Michał Sajnóg
     # popper
     "atomiks":"United Kingdom","popperjs":"United Kingdom",
     "floating-ui":"United Kingdom",
@@ -1175,14 +1175,14 @@ _KNOWN_ORG_COUNTRY: dict[str, str] = {
     # Composables
     "composablehorizons":"United Kingdom",
     "io-getquill":"United States","getquill":"United States",
-    # Community orgs â€” no single country, contributors worldwide
+    # Community orgs — no single country, contributors worldwide
     # Explicitly marking these "Unknown" blocks the repo-search fallback from
     # assigning a false country via an unrelated popular repo.
-    "definitelytyped":"Unknown",        # TypeScript types â€” global community
-    "types":"Unknown",                  # @types/* packages â€” global community
-    "webjars":"Unknown",                # WebJars â€” Maven wrappers, no country
+    "definitelytyped":"Unknown",        # TypeScript types — global community
+    "types":"Unknown",                  # @types/* packages — global community
+    "webjars":"Unknown",                # WebJars — Maven wrappers, no country
     "jsr":"Unknown",                    # JSR spec orgs
-    "tc39":"Unknown",                   # ECMAScript committee â€” global
+    "tc39":"Unknown",                   # ECMAScript committee — global
 }
 
 @st.cache_data(ttl=7200, show_spinner=False)
@@ -1192,46 +1192,46 @@ def _fetch_github_country(username: str, token: str = "",
     Return the normalised country for a GitHub username.
 
     Tries multiple username variants because registry maintainer fields don't
-    always exactly match GitHub usernames (e.g. "Mark Finger" â†’ try
-    MarkFinger, mark-finger, mark, etc. â€” first that returns HTTP 200 wins).
+    always exactly match GitHub usernames (e.g. "Mark Finger" → try
+    MarkFinger, mark-finger, mark, etc. — first that returns HTTP 200 wins).
 
     Cache hierarchy:
-      0. Curated known-orgs map  â€” overrides for big tech with unreliable profiles
-      1. SQLite persistent cache â€” 24-hour TTL (survives restarts)
-      2. GitHub API call         â€” last resort, tries multiple variants
+      0. Curated known-orgs map  — overrides for big tech with unreliable profiles
+      1. SQLite persistent cache — 24-hour TTL (survives restarts)
+      2. GitHub API call         — last resort, tries multiple variants
 
     skip_hardcode=True: used by _country_via_repo_search so it reads the live
     GitHub location only, never inheriting a hardcoded country for an unrelated
-    popular org (e.g. avoids 'lodash/lodash' â†’ _KNOWN_ORG_COUNTRY â†’ US).
+    popular org (e.g. avoids 'lodash/lodash' → _KNOWN_ORG_COUNTRY → US).
 
-    IMPORTANT â€” confirmed-found rule:
+    IMPORTANT — confirmed-found rule:
     If the GitHub API returns HTTP 200 for any variant but the location field is
     empty or unrecognisable, this function returns "Unknown" immediately and does
     NOT signal the caller to run a repo-search fallback.  The maintainer's profile
-    exists â€” their location is simply not public.  Repo-search cannot improve on
+    exists — their location is simply not public.  Repo-search cannot improve on
     that and would only produce false results from unrelated popular repos.
     """
-    if not username or username in ("â€”", ""):
+    if not username or username in ("—", ""):
         return "Unknown"
 
-    # 0. Known-org override â€” protects against unreliable GitHub profile data.
-    #    Example: github.com/facebook has empty location â†’ API says "Unknown",
+    # 0. Known-org override — protects against unreliable GitHub profile data.
+    #    Example: github.com/facebook has empty location → API says "Unknown",
     #    but Meta is clearly USA-based.  Without this, React shows "Unknown".
     #    Skipped when called from _country_via_repo_search (skip_hardcode=True)
     #    to avoid cross-registry contamination (repo search finds lodash/lodash
-    #    â†’ should NOT inherit the JS-ecosystem hardcode for Maven packages).
+    #    → should NOT inherit the JS-ecosystem hardcode for Maven packages).
     if not skip_hardcode and username.lower() in _KNOWN_ORG_COUNTRY:
         return _KNOWN_ORG_COUNTRY[username.lower()]
 
-    # 1. SQLite persistent cache â€” but only trust REAL country results.
+    # 1. SQLite persistent cache — but only trust REAL country results.
     #    If we previously cached "Unknown" it might have been due to a missing
     #    location field, a normalization gap (like "Cyprus, Larnaca" before we
     #    added Cyprus), or rate limiting. Always retry these.
     cached = _country_cache_get(username)
-    if cached is not None and cached not in ("Unknown", "âš ï¸ Rate Limited", ""):
+    if cached is not None and cached not in ("Unknown", "⚠️ Rate Limited", ""):
         return cached
 
-    # 2. GitHub API â€” try variants until one returns 200
+    # 2. GitHub API — try variants until one returns 200
     headers = {"User-Agent": "RegistryIntelligencePlatform/1.0",
                "Accept":     "application/vnd.github+json"}
     if token:
@@ -1247,44 +1247,44 @@ def _fetch_github_country(username: str, token: str = "",
                 profile_found = True
                 loc     = r.json().get("location") or ""
                 country = _normalize_country(loc)
-                # Only cache REAL countries â€” never cache "Unknown" so a
+                # Only cache REAL countries — never cache "Unknown" so a
                 # subsequent run will retry (e.g. after a normalizer update)
                 if country and country != "Unknown":
                     _country_cache_set(username, country)
-                # Return immediately â€” even if country is "Unknown".
+                # Return immediately — even if country is "Unknown".
                 # The profile exists; location is simply not public.
                 # Caller must NOT fall through to repo-search for this case.
                 return country
             if r.status_code in (403, 429):
                 rate_limited = True
                 break          # don't keep hitting a rate-limited API
-            # 404 means this variant doesn't exist â€” try the next one
+            # 404 means this variant doesn't exist — try the next one
         except Exception:
             continue
 
     if rate_limited:
-        return "âš ï¸ Rate Limited"   # do NOT cache â€” retry when limit resets
+        return "⚠️ Rate Limited"   # do NOT cache — retry when limit resets
 
-    # All variants returned 404 â†’ no GitHub profile found at all.
+    # All variants returned 404 → no GitHub profile found at all.
     # Return a special sentinel so _enrich_countries knows repo-search is allowed.
     # (Different from "Unknown" which means "profile found, location empty".)
     if not profile_found:
-        return "â“ No Profile"
+        return "❓ No Profile"
 
     return "Unknown"
 
 def _extract_gh_username(maintainer: str) -> str:
     """
     Extract the GitHub username from a formatted maintainer string.
-      "Org Â· redhuntlabs"  â†’  "redhuntlabs"
-      "User Â· z4yx"        â†’  "z4yx"
-      "ðŸ‘¤ username"        â†’  "username"
-      "ðŸ¢ OrgName"         â†’  "OrgName"
-      "â€”" / ""             â†’  ""
+      "Org · redhuntlabs"  →  "redhuntlabs"
+      "User · z4yx"        →  "z4yx"
+      "👤 username"        →  "username"
+      "🏢 OrgName"         →  "OrgName"
+      "—" / ""             →  ""
 
     CRITICAL: Filters out person-name display strings.
-    "User Â· Jeremy Ashkenas" â†’ "" (don't lookup random Jeremy on GitHub)
-    "Org Â· The Bootstrap Authors" â†’ "" (don't lookup "The")
+    "User · Jeremy Ashkenas" → "" (don't lookup random Jeremy on GitHub)
+    "Org · The Bootstrap Authors" → "" (don't lookup "The")
     These produce false-positive country results from random GitHub users
     who happen to share a first name with the real maintainer.
     """
@@ -1294,17 +1294,17 @@ def _extract_gh_username(maintainer: str) -> str:
               "team", "authors", "author", "community", "project", "labs", "lab",
               "group", "co", "company", "developers", "dev", "developer",
               "contributors", "contributor", "maintainers", "maintainer",
-              "â€”", "", "all", "various", "anonymous", "official", "open",
+              "—", "", "all", "various", "anonymous", "official", "open",
               "source", "opensource"}
     m = str(maintainer).strip()
-    if not m or m == "â€”":
+    if not m or m == "—":
         return ""
-    if " Â· " in m:
-        after = m.split(" Â· ", 1)[1].strip()
+    if " · " in m:
+        after = m.split(" · ", 1)[1].strip()
     else:
         after = re.sub(r"^[^\w]*", "", m).strip()
 
-    # Strip trailing "+N" marker (e.g. "jQuery Foundation +1" â†’ "jQuery Foundation")
+    # Strip trailing "+N" marker (e.g. "jQuery Foundation +1" → "jQuery Foundation")
     after = re.sub(r"\s*\+\d+\s*$", "", after).strip()
     if not after:
         return ""
@@ -1312,10 +1312,10 @@ def _extract_gh_username(maintainer: str) -> str:
     parts = after.split()
     uname = parts[0] if parts else ""
 
-    # â”€â”€ Person-name guard â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # ── Person-name guard ──────────────────────────────────────────────
     # If the maintainer has MULTIPLE space-separated words AND each word is
     # an alphabetic capitalised token, this is a person's DISPLAY NAME
-    # (e.g. "Jeremy Ashkenas", "Faruk AteÅŸ", "The Bootstrap Authors") â€”
+    # (e.g. "Jeremy Ashkenas", "Faruk Ateş", "The Bootstrap Authors") —
     # not a GitHub handle. Looking up such names produces wrong countries
     # because random GitHub users share these first names.
     if len(parts) >= 2:
@@ -1326,17 +1326,17 @@ def _extract_gh_username(maintainer: str) -> str:
         if looks_like_display_name:
             return ""
 
-    # First word is a noise word â†’ skip
+    # First word is a noise word → skip
     if uname.lower() in _NOISE:
         return ""
 
-    # Reverse-DNS Maven groupIds (com.google.guava, org.apache.commons â€¦) are
+    # Reverse-DNS Maven groupIds (com.google.guava, org.apache.commons …) are
     # NOT GitHub usernames. Map them to the most likely GitHub org name:
     # the SECOND segment after the TLD prefix.
-    #   com.google.guava       â†’ "google"
-    #   org.apache.commons     â†’ "apache"
-    #   io.netty.client        â†’ "netty"
-    #   org.springframework.*  â†’ "spring-projects"  (well-known mapping)
+    #   com.google.guava       → "google"
+    #   org.apache.commons     → "apache"
+    #   io.netty.client        → "netty"
+    #   org.springframework.*  → "spring-projects"  (well-known mapping)
     if "." in uname and any(uname.lower().startswith(p) for p in (
             "com.", "org.", "io.", "net.", "edu.", "gov.", "co.", "uk.",
             "dev.", "app.", "me.", "ai.")):
@@ -1356,7 +1356,7 @@ def _extract_gh_username(maintainer: str) -> str:
 
     return re.sub(r"[^a-zA-Z0-9\-]", "", uname)
 
-# â”€â”€ Package-name â†’ canonical GitHub org map â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ── Package-name → canonical GitHub org map ──────────────────────────────────
 # For widely-known packages where the registry (especially NuGet/Packagist)
 # doesn't link to the upstream GitHub repo AND the maintainer is a person's
 # display name (blocked by safety guard), this map provides the canonical
@@ -1449,32 +1449,32 @@ def _normalize_pkg_name(s: str) -> str:
 
 def _enrich_countries(df, github_token: str = "") -> "pd.DataFrame":
     """
-    Add a 'Country' column to the results dataframe â€” PARALLEL implementation.
+    Add a 'Country' column to the results dataframe — PARALLEL implementation.
 
     Optimization strategy:
       1. Collect all unique (gh_owner, extracted_username) candidates across rows
-      2. Deduplicate â€” same name across many rows is looked up only ONCE
+      2. Deduplicate — same name across many rows is looked up only ONCE
       3. Fetch ALL unique names in PARALLEL via ThreadPoolExecutor (8 workers)
       4. For rows still Unknown, do parallel repo-search fallback (4 workers)
       5. Stitch results back to each row
 
     Why this is much faster:
-      â€¢ Old code: 30 rows â†’ 30+ sequential API calls (3-15s)
-      â€¢ New code: ~10-15 unique names â†’ batched parallel (1-2s)
-      â€¢ Repo search only runs for genuinely unresolved rows, also parallel
+      • Old code: 30 rows → 30+ sequential API calls (3-15s)
+      • New code: ~10-15 unique names → batched parallel (1-2s)
+      • Repo search only runs for genuinely unresolved rows, also parallel
     """
     if df.empty:
         df = df.copy()
         df.insert(df.columns.get_loc("Maintainer") + 1, "Country", [])
         return df
 
-    # â”€â”€ Pass 1: extract candidates for every row â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # ── Pass 1: extract candidates for every row ──────────────────────────
     candidates = []
     for _, row in df.iterrows():
         lib       = row.get("Library", "") or ""
         gh_owner  = (row.get("_gh_owner") or "").strip()
         uname     = _extract_gh_username(row.get("Maintainer", "") or "")
-        # Package-name canonical lookup â€” well-known packages with no upstream link
+        # Package-name canonical lookup — well-known packages with no upstream link
         pkg_org   = _PACKAGE_TO_GH_ORG.get(_normalize_pkg_name(lib), "")
         candidates.append({
             "lib":      lib,
@@ -1483,7 +1483,7 @@ def _enrich_countries(df, github_token: str = "") -> "pd.DataFrame":
             "pkg_org":  pkg_org,
         })
 
-    # â”€â”€ Pass 2: collect unique names that need a GitHub API lookup â”€â”€â”€â”€â”€â”€â”€â”€
+    # ── Pass 2: collect unique names that need a GitHub API lookup ────────
     unique_names = set()
     for c in candidates:
         if c["gh_owner"]:
@@ -1493,7 +1493,7 @@ def _enrich_countries(df, github_token: str = "") -> "pd.DataFrame":
         if c["pkg_org"]:
             unique_names.add(c["pkg_org"])
 
-    # â”€â”€ Pass 3: parallel fetch every unique name (8 workers) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # ── Pass 3: parallel fetch every unique name (8 workers) ──────────────
     name_to_country: dict[str, str] = {}
     if unique_names:
         with ThreadPoolExecutor(max_workers=8) as _ex:
@@ -1506,41 +1506,41 @@ def _enrich_countries(df, github_token: str = "") -> "pd.DataFrame":
                 except Exception:
                     name_to_country[_name] = "Unknown"
 
-    # â”€â”€ Pass 4: stitch per-row country + collect repo-search candidates â”€â”€â”€
+    # ── Pass 4: stitch per-row country + collect repo-search candidates ───
     # Resolution order per row:
-    #   1. _gh_owner       (from adapter â€” most accurate when available)
+    #   1. _gh_owner       (from adapter — most accurate when available)
     #   2. uname           (extracted from Maintainer text)
-    #   3. pkg_org         (well-known package â†’ canonical GitHub org map)
+    #   3. pkg_org         (well-known package → canonical GitHub org map)
     #   4. repo search     (ONLY when no GitHub profile was found at all)
     #
     # KEY RULE: "Unknown" means a profile WAS found but location is not public.
-    #           "â“ No Profile" means no GitHub profile exists for any variant.
-    # Repo-search is only allowed for "â“ No Profile" â€” never for "Unknown".
+    #           "❓ No Profile" means no GitHub profile exists for any variant.
+    # Repo-search is only allowed for "❓ No Profile" — never for "Unknown".
     # This prevents popular repos (lodash/lodash, etc.) from being used as a
     # false country source for unrelated packages on other registries.
     countries          = []
     repo_search_queue  = []   # (row_index, library_name)
-    _BAD         = {"Unknown", "âš ï¸ Rate Limited", "", None}
-    _NO_PROFILE  = {"â“ No Profile", "Unknown", "âš ï¸ Rate Limited", "", None}
+    _BAD         = {"Unknown", "⚠️ Rate Limited", "", None}
+    _NO_PROFILE  = {"❓ No Profile", "Unknown", "⚠️ Rate Limited", "", None}
     for i, c in enumerate(candidates):
-        country = "â“ No Profile"
+        country = "❓ No Profile"
         if c["gh_owner"]:
-            country = name_to_country.get(c["gh_owner"], "â“ No Profile")
+            country = name_to_country.get(c["gh_owner"], "❓ No Profile")
         if country in _NO_PROFILE and c["uname"]:
-            country = name_to_country.get(c["uname"], "â“ No Profile")
+            country = name_to_country.get(c["uname"], "❓ No Profile")
         if country in _NO_PROFILE and c["pkg_org"]:
-            country = name_to_country.get(c["pkg_org"], "â“ No Profile")
+            country = name_to_country.get(c["pkg_org"], "❓ No Profile")
 
         # Only trigger repo-search when NO GitHub profile was found at all.
-        # "Unknown" = profile exists, location private â†’ accept as final answer.
-        if country == "â“ No Profile" and c["lib"] and len(c["lib"]) >= 3:
+        # "Unknown" = profile exists, location private → accept as final answer.
+        if country == "❓ No Profile" and c["lib"] and len(c["lib"]) >= 3:
             repo_search_queue.append((i, c["lib"]))
             countries.append("Unknown")    # placeholder, may be overridden
         else:
             countries.append(country if country not in _BAD else "Unknown")
 
-    # â”€â”€ Pass 5: parallel repo-search fallback for still-Unknown rows â”€â”€â”€â”€â”€â”€
-    # Use a smaller pool (4) â€” search API has stricter rate limits than user API
+    # ── Pass 5: parallel repo-search fallback for still-Unknown rows ──────
+    # Use a smaller pool (4) — search API has stricter rate limits than user API
     if repo_search_queue:
         # Deduplicate by library name too
         unique_libs = {lib for _, lib in repo_search_queue}
@@ -1571,7 +1571,7 @@ def _country_via_repo_search(pkg_name: str, token: str = "") -> str:
     take the top-starred result's owner, and look up THEIR country.
 
     Works WITHOUT a token (lower rate limits but still functional).
-    Most popular packages have a canonical upstream GitHub repo â€” if "react"
+    Most popular packages have a canonical upstream GitHub repo — if "react"
     returns facebook/react as the top hit, that's the right project.
     """
     if not pkg_name or len(pkg_name) < 3:
@@ -1601,7 +1601,7 @@ def _country_via_repo_search(pkg_name: str, token: str = "") -> str:
                 # Prevents inheriting a hardcoded country for a popular org
                 # that has nothing to do with the package being searched.
                 country = _fetch_github_country(owner, token, skip_hardcode=True)
-                if country not in ("Unknown", "âš ï¸ Rate Limited", "â“ No Profile"):
+                if country not in ("Unknown", "⚠️ Rate Limited", "❓ No Profile"):
                     return country
     except Exception:
         pass
@@ -1610,29 +1610,29 @@ def _country_via_repo_search(pkg_name: str, token: str = "") -> str:
 def _flag(country: str) -> str:
     """Return a Unicode flag emoji for common countries."""
     _FLAGS = {
-        "United Kingdom":"ðŸ‡¬ðŸ‡§","United States":"ðŸ‡ºðŸ‡¸","Germany":"ðŸ‡©ðŸ‡ª","France":"ðŸ‡«ðŸ‡·",
-        "India":"ðŸ‡®ðŸ‡³","China":"ðŸ‡¨ðŸ‡³","Russia":"ðŸ‡·ðŸ‡º","Canada":"ðŸ‡¨ðŸ‡¦","Australia":"ðŸ‡¦ðŸ‡º",
-        "Netherlands":"ðŸ‡³ðŸ‡±","Japan":"ðŸ‡¯ðŸ‡µ","South Korea":"ðŸ‡°ðŸ‡·","Brazil":"ðŸ‡§ðŸ‡·",
-        "Sweden":"ðŸ‡¸ðŸ‡ª","Norway":"ðŸ‡³ðŸ‡´","Finland":"ðŸ‡«ðŸ‡®","Denmark":"ðŸ‡©ðŸ‡°",
-        "Switzerland":"ðŸ‡¨ðŸ‡­","Spain":"ðŸ‡ªðŸ‡¸","Italy":"ðŸ‡®ðŸ‡¹","Poland":"ðŸ‡µðŸ‡±",
-        "Ukraine":"ðŸ‡ºðŸ‡¦","Israel":"ðŸ‡®ðŸ‡±","Singapore":"ðŸ‡¸ðŸ‡¬","Taiwan":"ðŸ‡¹ðŸ‡¼",
-        "Portugal":"ðŸ‡µðŸ‡¹","Czech Republic":"ðŸ‡¨ðŸ‡¿","Romania":"ðŸ‡·ðŸ‡´","Belgium":"ðŸ‡§ðŸ‡ª",
-        "Austria":"ðŸ‡¦ðŸ‡¹","New Zealand":"ðŸ‡³ðŸ‡¿","Argentina":"ðŸ‡¦ðŸ‡·","Mexico":"ðŸ‡²ðŸ‡½",
-        "South Africa":"ðŸ‡¿ðŸ‡¦","Pakistan":"ðŸ‡µðŸ‡°","Iran":"ðŸ‡®ðŸ‡·","Turkey":"ðŸ‡¹ðŸ‡·",
-        "Egypt":"ðŸ‡ªðŸ‡¬","Nigeria":"ðŸ‡³ðŸ‡¬","Indonesia":"ðŸ‡®ðŸ‡©","Vietnam":"ðŸ‡»ðŸ‡³",
-        "Thailand":"ðŸ‡¹ðŸ‡­","Malaysia":"ðŸ‡²ðŸ‡¾","Philippines":"ðŸ‡µðŸ‡­","Bangladesh":"ðŸ‡§ðŸ‡©",
-        "Hungary":"ðŸ‡­ðŸ‡º","Greece":"ðŸ‡¬ðŸ‡·","Ireland":"ðŸ‡®ðŸ‡ª","Hong Kong":"ðŸ‡­ðŸ‡°",
-        "United Arab Emirates":"ðŸ‡¦ðŸ‡ª","Saudi Arabia":"ðŸ‡¸ðŸ‡¦","Colombia":"ðŸ‡¨ðŸ‡´",
-        "Chile":"ðŸ‡¨ðŸ‡±","Morocco":"ðŸ‡²ðŸ‡¦","Kenya":"ðŸ‡°ðŸ‡ª","Ghana":"ðŸ‡¬ðŸ‡­",
-        "ðŸŒ Remote / Global":"ðŸŒ","Unknown":"â“",
+        "United Kingdom":"🇬🇧","United States":"🇺🇸","Germany":"🇩🇪","France":"🇫🇷",
+        "India":"🇮🇳","China":"🇨🇳","Russia":"🇷🇺","Canada":"🇨🇦","Australia":"🇦🇺",
+        "Netherlands":"🇳🇱","Japan":"🇯🇵","South Korea":"🇰🇷","Brazil":"🇧🇷",
+        "Sweden":"🇸🇪","Norway":"🇳🇴","Finland":"🇫🇮","Denmark":"🇩🇰",
+        "Switzerland":"🇨🇭","Spain":"🇪🇸","Italy":"🇮🇹","Poland":"🇵🇱",
+        "Ukraine":"🇺🇦","Israel":"🇮🇱","Singapore":"🇸🇬","Taiwan":"🇹🇼",
+        "Portugal":"🇵🇹","Czech Republic":"🇨🇿","Romania":"🇷🇴","Belgium":"🇧🇪",
+        "Austria":"🇦🇹","New Zealand":"🇳🇿","Argentina":"🇦🇷","Mexico":"🇲🇽",
+        "South Africa":"🇿🇦","Pakistan":"🇵🇰","Iran":"🇮🇷","Turkey":"🇹🇷",
+        "Egypt":"🇪🇬","Nigeria":"🇳🇬","Indonesia":"🇮🇩","Vietnam":"🇻🇳",
+        "Thailand":"🇹🇭","Malaysia":"🇲🇾","Philippines":"🇵🇭","Bangladesh":"🇧🇩",
+        "Hungary":"🇭🇺","Greece":"🇬🇷","Ireland":"🇮🇪","Hong Kong":"🇭🇰",
+        "United Arab Emirates":"🇦🇪","Saudi Arabia":"🇸🇦","Colombia":"🇨🇴",
+        "Chile":"🇨🇱","Morocco":"🇲🇦","Kenya":"🇰🇪","Ghana":"🇬🇭",
+        "🌐 Remote / Global":"🌐","Unknown":"❓",
     }
-    return _FLAGS.get(country, "ðŸ³")
+    return _FLAGS.get(country, "🏳")
 
 def _fmt_country(country: str) -> str:
     return f"{_flag(country)} {country}"
 
-# â”€â”€ Flag image URLs (flagcdn.com) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-# Maps full country name â†’ ISO 3166-1 alpha-2 lowercase code used by flagcdn.com
+# ── Flag image URLs (flagcdn.com) ──────────────────────────────────────────────
+# Maps full country name → ISO 3166-1 alpha-2 lowercase code used by flagcdn.com
 _COUNTRY_ISO2: dict[str, str] = {
     "United Kingdom":"gb","United States":"us","Germany":"de","France":"fr",
     "India":"in","China":"cn","Russia":"ru","Canada":"ca","Australia":"au",
@@ -1682,7 +1682,7 @@ def _country_flag_url(country: str) -> str:
     return f"https://flagcdn.com/20x15/{iso2}.png"
 
 def _fmt_dl(n):
-    if not n or n == 0: return "â€”"
+    if not n or n == 0: return "—"
     if n >= 1_000_000_000: return f"{n/1_000_000_000:.1f}B"
     if n >= 1_000_000:     return f"{n/1_000_000:.1f}M"
     if n >= 1_000:         return f"{n/1_000:.0f}K"
@@ -1700,16 +1700,16 @@ def _lic(val):
       "https://www.apache.org/licenses/LICENSE-2.0"
     All of these should resolve to a clean SPDX identifier.
     """
-    if not val or str(val).strip() in ("â€”", "N/A", ""):
-        return "â€”"
+    if not val or str(val).strip() in ("—", "N/A", ""):
+        return "—"
     raw = str(val).strip()
 
-    # Reject pure noise tokens â€” license filenames, not licenses
+    # Reject pure noise tokens — license filenames, not licenses
     _NOISE = {"license", "license.txt", "license.md", "license.html",
               "licence", "licence.txt", "copying", "copyright", "notice",
               "license.rst"}
     if raw.lower() in _NOISE:
-        return "â€”"
+        return "—"
 
     # Map common license-related URL fragments / filenames to SPDX
     _PATTERNS = [
@@ -1736,15 +1736,15 @@ def _lic(val):
         if needle in lower:
             return spdx
 
-    # If it's a URL but didn't match a known pattern â†’ unparseable
+    # If it's a URL but didn't match a known pattern → unparseable
     if raw.startswith("http"):
         # Last-resort: take last path segment, but reject if it's just a filename
         tail = raw.rstrip("/").split("/")[-1].split("?")[0]
         if tail.lower() in _NOISE or "." in tail.lower():
-            return "â€”"   # don't show "LICENSE" or "LICENSE.txt"
-        return tail or "â€”"
+            return "—"   # don't show "LICENSE" or "LICENSE.txt"
+        return tail or "—"
 
-    return raw or "â€”"
+    return raw or "—"
 
 def _clean_repo_url(url):
     """
@@ -1761,12 +1761,12 @@ def _clean_repo_url(url):
     Returns None when no valid URL exists, so Streamlit's LinkColumn
     renders an empty cell instead of a broken link like /N/A.
     """
-    if not url or url in ("N/A", "â€”", "", "N\\A"):
+    if not url or url in ("N/A", "—", "", "N\\A"):
         return None
     if isinstance(url, dict):
         url = url.get("url") or ""
     url = str(url).strip()
-    if not url or url in ("N/A", "â€”", "N\\A"):
+    if not url or url in ("N/A", "—", "N\\A"):
         return None
     # Strip git+ or git:// prefix
     url = re.sub(r"^git\+", "", url)
@@ -1778,56 +1778,56 @@ def _clean_repo_url(url):
     # Force https://
     if url.startswith("http://"):
         url = "https://" + url[7:]
-    # Final validation â€” must be a real web URL
+    # Final validation — must be a real web URL
     if not url.startswith(("https://", "http://")):
         return None
     return url
 
 def _fmt_date(s):
-    """Return YYYY-MM-DD from any ISO-ish string, or 'â€”'."""
-    if not s or str(s).strip() in ("â€”","N/A",""): return "â€”"
+    """Return YYYY-MM-DD from any ISO-ish string, or '—'."""
+    if not s or str(s).strip() in ("—","N/A",""): return "—"
     s = str(s).strip()
     # OData /Date(ms)/ format (Chocolatey)
     if s.startswith("/Date("):
         try:
             ms = int(s.split("(")[1].split(")")[0].split("+")[0].split("-")[0])
             return datetime.datetime.utcfromtimestamp(ms/1000).strftime("%Y-%m-%d")
-        except: return "â€”"
+        except: return "—"
     # Maven epoch-ms (13-digit integer)
     if s.isdigit() and len(s) == 13:
         try:
             return datetime.datetime.utcfromtimestamp(int(s)/1000).strftime("%Y-%m-%d")
-        except: return "â€”"
+        except: return "—"
     # ISO / RFC 3339 strings
-    return s[:10] if len(s) >= 10 else "â€”"
+    return s[:10] if len(s) >= 10 else "—"
 
-# â”€â”€ Abandoned Package Detection â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ── Abandoned Package Detection ────────────────────────────────────────────────
 def _pkg_status(last_updated: str) -> str:
     """
     Classify a package as Active / Aging / Abandoned based on last update date.
 
-      âœ… Active    â€” updated within the last 6 months
-      âš ï¸ Aging     â€” last update between 6 months and 2 years ago
-      ðŸš¨ Abandoned â€” no update in more than 2 years
-      â“ Unknown   â€” no date data available
+      ✅ Active    — updated within the last 6 months
+      ⚠️ Aging     — last update between 6 months and 2 years ago
+      🚨 Abandoned — no update in more than 2 years
+      ❓ Unknown   — no date data available
     """
-    if not last_updated or last_updated in ("â€”", "N/A", ""):
-        return "â“ Unknown"
+    if not last_updated or last_updated in ("—", "N/A", ""):
+        return "❓ Unknown"
     try:
         date = datetime.datetime.strptime(last_updated[:10], "%Y-%m-%d")
         now  = datetime.datetime.utcnow()
         days = (now - date).days
         if days <= 180:
-            return "âœ… Active"
+            return "✅ Active"
         elif days <= 730:
-            return "âš ï¸ Aging"
+            return "⚠️ Aging"
         else:
-            return "ðŸš¨ Abandoned"
+            return "🚨 Abandoned"
     except Exception:
-        return "â“ Unknown"
+        return "❓ Unknown"
 
-# â”€â”€ Risk Classification (Phase 2 Security Suite) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-# License risk tiers â€” based on common compliance / supply-chain practice.
+# ── Risk Classification (Phase 2 Security Suite) ───────────────────────────────
+# License risk tiers — based on common compliance / supply-chain practice.
 _LICENSE_SAFE = {
     "mit", "apache-2.0", "apache 2.0", "apache2", "apache",
     "bsd-3-clause", "bsd-2-clause", "bsd", "0bsd", "isc",
@@ -1844,27 +1844,27 @@ _LICENSE_COPYLEFT = {
 def _license_risk(license_str: str) -> str:
     """
     Classify a license string into one of:
-      âœ… Safe       â€” MIT / Apache / BSD / ISC / Unlicense (permissive)
-      âš ï¸ Copyleft   â€” GPL / AGPL / LGPL / MPL (viral or weak-viral)
-      âŒ Missing    â€” no license declared (legal grey area)
-      âšª Other      â€” proprietary, custom, or unrecognised
+      ✅ Safe       — MIT / Apache / BSD / ISC / Unlicense (permissive)
+      ⚠️ Copyleft   — GPL / AGPL / LGPL / MPL (viral or weak-viral)
+      ❌ Missing    — no license declared (legal grey area)
+      ⚪ Other      — proprietary, custom, or unrecognised
     """
-    if not license_str or str(license_str).strip() in ("â€”", "N/A", "", "license", "LICENSE"):
-        return "âŒ Missing"
+    if not license_str or str(license_str).strip() in ("—", "N/A", "", "license", "LICENSE"):
+        return "❌ Missing"
     l = str(license_str).lower().strip()
     # Strip common noise tokens
     l = re.sub(r"\s+", " ", l)
     for safe in _LICENSE_SAFE:
         if safe in l:
-            return "âœ… Safe"
+            return "✅ Safe"
     for copyleft in _LICENSE_COPYLEFT:
         if copyleft in l:
-            return "âš ï¸ Copyleft"
-    return "âšª Other"
+            return "⚠️ Copyleft"
+    return "⚪ Other"
 
-# Country risk tiers â€” conservative defaults; user can adjust as needed.
+# Country risk tiers — conservative defaults; user can adjust as needed.
 _COUNTRY_TIER: dict[str, str] = {
-    # ðŸŸ¢ Trusted â€” Western democracies + strong tech-allied nations
+    # 🟢 Trusted — Western democracies + strong tech-allied nations
     "United States":"Trusted","United Kingdom":"Trusted",
     "Germany":"Trusted","Canada":"Trusted","Australia":"Trusted",
     "Japan":"Trusted","South Korea":"Trusted","Singapore":"Trusted",
@@ -1873,7 +1873,7 @@ _COUNTRY_TIER: dict[str, str] = {
     "Denmark":"Trusted","Ireland":"Trusted","New Zealand":"Trusted",
     "Austria":"Trusted","Belgium":"Trusted","Luxembourg":"Trusted",
     "Iceland":"Trusted","Taiwan":"Trusted","Israel":"Trusted",
-    # Caution â€” large active dev communities but variable supply-chain hygiene
+    # Caution — large active dev communities but variable supply-chain hygiene
     "India":"Caution","Brazil":"Caution","Mexico":"Caution",
     "Poland":"Caution","Ukraine":"Caution","Romania":"Caution",
     "Czech Republic":"Caution","Spain":"Caution","Italy":"Caution",
@@ -1888,7 +1888,7 @@ _COUNTRY_TIER: dict[str, str] = {
     "Latvia":"Caution","Estonia":"Caution","Slovakia":"Caution",
     "Croatia":"Caution","Serbia":"Caution","Slovenia":"Caution",
     "Cyprus":"Caution","Malta":"Caution","Hong Kong":"Caution",
-    # Restricted â€” commonly flagged in compliance / sanctions contexts
+    # Restricted — commonly flagged in compliance / sanctions contexts
     "Russia":"Restricted","China":"Restricted",
     "Iran":"Restricted","North Korea":"Restricted",
     "Belarus":"Restricted","Cuba":"Restricted",
@@ -1898,32 +1898,32 @@ _COUNTRY_TIER: dict[str, str] = {
 
 def _country_tier(country: str) -> str:
     """Map a country name to its risk tier (or empty if unknown)."""
-    if not country or country in ("Unknown", "â€”", "", "â“ Unknown", "âš ï¸ Rate Limited"):
-        return "â“ Unrated"
-    if country == "ðŸŒ Remote / Global":
+    if not country or country in ("Unknown", "—", "", "❓ Unknown", "⚠️ Rate Limited"):
+        return "❓ Unrated"
+    if country == "🌐 Remote / Global":
         return "Caution"
     return _COUNTRY_TIER.get(country, "Caution")   # default unmapped = caution
 
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# ═══════════════════════════════════════════════════════════════════════════════
 # SECURITY AUDIT MODULE
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# ═══════════════════════════════════════════════════════════════════════════════
 # Self-contained, extensible per-library security check system.
 #
 # To add a new check (e.g. Check 6: SBOM signing verification):
 #   1. Write a function `_check_<name>(row, context) -> dict` returning:
 #        {"severity": "critical"|"high"|"medium"|"low"|"pass",
-#         "label":    "ðŸ”´ Critical: short reason",
+#         "label":    "🔴 Critical: short reason",
 #         "details":  "longer human-readable explanation"}
 #   2. Add an entry to _SECURITY_CHECKS below.
-# That's it â€” UI auto-renders the new check as a new column.
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# That's it — UI auto-renders the new check as a new column.
+# ───────────────────────────────────────────────────────────────────────────────
 
-# Severity ranking (higher number = worse) â€” used by the worst-of aggregator
+# Severity ranking (higher number = worse) — used by the worst-of aggregator
 _SEV_RANK = {"pass": 0, "low": 1, "medium": 2, "high": 3, "critical": 4}
 _SEV_EMOJI = {
-    "pass":     "âœ“",  "low":      "âœ“",
-    "medium":   "âš ",  "high":     "âš ",
-    "critical": "âœ—",
+    "pass":     "✓",  "low":      "✓",
+    "medium":   "⚠",  "high":     "⚠",
+    "critical": "✗",
 }
 _SEV_LABEL = {
     "pass":     "Pass",     "low":      "Low",
@@ -1931,7 +1931,7 @@ _SEV_LABEL = {
     "critical": "Critical",
 }
 
-# â”€â”€â”€ Check 1 â€” Suspicious New Maintainer Account â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ─── Check 1 — Suspicious New Maintainer Account ─────────────────────────────
 def _check_account_age(row, context):
     """
     Looks up the primary maintainer's GitHub account age. New accounts =
@@ -1945,7 +1945,7 @@ def _check_account_age(row, context):
     if not gh_owner:
         return {"severity": "low",
                 "label":    "No maintainer to verify",
-                "details":  "Maintainer field empty â€” cannot fetch account age"}
+                "details":  "Maintainer field empty — cannot fetch account age"}
 
     # Cache key in session_state so multiple checks share lookups
     cache = st.session_state.setdefault("_account_age_cache", {})
@@ -1975,7 +1975,7 @@ def _check_account_age(row, context):
     if days < 30:
         return {"severity": "critical",
                 "label":    f"Account only {days}d old",
-                "details":  f"GitHub account {gh_owner} is less than 30 days old â€” high risk of namespace squat / hijack"}
+                "details":  f"GitHub account {gh_owner} is less than 30 days old — high risk of namespace squat / hijack"}
     if days < 180:
         return {"severity": "high",
                 "label":    f"New account ({days}d)",
@@ -1988,42 +1988,42 @@ def _check_account_age(row, context):
             "label":    f"{round(days/365,1)}y old",
             "details":  f"GitHub account {gh_owner} is mature ({days} days old)"}
 
-# â”€â”€â”€ Check 2 â€” Abandoned Package â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ─── Check 2 — Abandoned Package ─────────────────────────────────────────────
 def _check_abandoned(row, context):
     """Wraps _pkg_status into a structured CheckResult."""
     status = row.get("Status", "") or _pkg_status(row.get("Last Updated", ""))
     if "Abandoned" in status:
         return {"severity": "critical",
                 "label":    "Abandoned (2y+ stale)",
-                "details":  f"Last updated {row.get('Last Updated','â€”')} â€” no maintenance in over 2 years"}
+                "details":  f"Last updated {row.get('Last Updated','—')} — no maintenance in over 2 years"}
     if "Aging" in status:
         return {"severity": "medium",
-                "label":    "Aging (6mâ€“2y)",
-                "details":  f"Last updated {row.get('Last Updated','â€”')} â€” slowing maintenance"}
+                "label":    "Aging (6m–2y)",
+                "details":  f"Last updated {row.get('Last Updated','—')} — slowing maintenance"}
     if "Unknown" in status:
         return {"severity": "low",
                 "label":    "Status unknown",
                 "details":  "Registry did not provide a last-updated date"}
     return {"severity": "pass",
             "label":    "Active",
-            "details":  f"Last updated {row.get('Last Updated','â€”')} â€” within 6 months"}
+            "details":  f"Last updated {row.get('Last Updated','—')} — within 6 months"}
 
-# â”€â”€â”€ Check 3 â€” Known CVE â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ─── Check 3 — Known CVE ─────────────────────────────────────────────────────
 def _check_cve(row, context):
     """
-    Parses the CVEs column. If any CVE present â†’ High severity.
-    (CVSS escalation could be added later â€” would require an extra OSV call
+    Parses the CVEs column. If any CVE present → High severity.
+    (CVSS escalation could be added later — would require an extra OSV call
     per package for detailed scoring.)
     """
     cves = str(row.get("CVEs", "") or "")
-    if cves in ("None", "â€”", "", "Timeout", "Error", "N/A"):
+    if cves in ("None", "—", "", "Timeout", "Error", "N/A"):
         return {"severity": "pass",
                 "label":    "No known CVEs",
                 "details":  "OSV.dev + GitHub Advisory DB returned no vulnerabilities"}
     # Count only properly-formatted CVE/GHSA IDs
     cve_count = sum(1 for c in cves.split(",") if c.strip().startswith(("CVE", "GHSA")))
     if cve_count == 0:
-        # Non-empty field but no recognisable CVE IDs â€” treat as unverified, not a confirmed vuln
+        # Non-empty field but no recognisable CVE IDs — treat as unverified, not a confirmed vuln
         return {"severity": "low",
                 "label":    "CVE data unrecognised",
                 "details":  f"CVE field contains unrecognised format: {cves[:120]}"}
@@ -2035,45 +2035,45 @@ def _check_cve(row, context):
             "label":    f"{cve_count} CVE found",
             "details":  f"Known vulnerability: {cves[:120]}"}
 
-# â”€â”€â”€ Check 4 â€” Bus Factor â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ─── Check 4 — Bus Factor ────────────────────────────────────────────────────
 def _check_bus_factor(row, context):
-    """â‰¤5 maintainers + high downloads = supply-chain single point of failure."""
+    """≤5 maintainers + high downloads = supply-chain single point of failure."""
     sm = row.get("Single Maintainer", "") or _single_maintainer_risk(
         row.get("Maintainer", ""), row.get("Downloads", ""))
     downloads = _parse_download_num(row.get("Downloads", ""))
     if "Bus Factor" in sm:
         if downloads >= 10_000_000:
             return {"severity": "critical",
-                    "label":    "Bus Factor: â‰¤5 maint + 10M+ dl",
-                    "details":  f"â‰¤5 maintainers for a package with {row.get('Downloads','')} downloads â€” left-pad/event-stream risk"}
+                    "label":    "Bus Factor: ≤5 maint + 10M+ dl",
+                    "details":  f"≤5 maintainers for a package with {row.get('Downloads','')} downloads — left-pad/event-stream risk"}
         return {"severity": "high",
-                "label":    "Bus Factor (â‰¤5 maintainers)",
-                "details":  f"â‰¤5 maintainers + {row.get('Downloads','')} downloads"}
+                "label":    "Bus Factor (≤5 maintainers)",
+                "details":  f"≤5 maintainers + {row.get('Downloads','')} downloads"}
     if "Solo" in sm:
         return {"severity": "medium",
                 "label":    "Small team (moderate dl)",
-                "details":  f"â‰¤5 maintainers with {row.get('Downloads','')} downloads"}
+                "details":  f"≤5 maintainers with {row.get('Downloads','')} downloads"}
     return {"severity": "pass",
             "label":    "Healthy maintainer count",
             "details":  "More than 5 maintainers with publish rights"}
 
-# â”€â”€â”€ Check 5 â€” Restricted Geographic Origin â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ─── Check 5 — Restricted Geographic Origin ──────────────────────────────────
 def _check_country(row, context):
     """Maps the maintainer's country to the org's risk tier."""
     country = row.get("Country", "")
-    if not country or country in ("Unknown", "â€”", "", "â“ Unknown"):
+    if not country or country in ("Unknown", "—", "", "❓ Unknown"):
         return {"severity": "low",
                 "label":    "Country unverified",
-                "details":  "Country could not be resolved â€” informational only"}
+                "details":  "Country could not be resolved — informational only"}
     tier = _country_tier(country)
     if "Unrated" in tier:
         return {"severity": "low",
                 "label":    "Country unverified",
-                "details":  f"Country '{country}' could not be resolved to a risk tier â€” informational only"}
+                "details":  f"Country '{country}' could not be resolved to a risk tier — informational only"}
     if "Restricted" in tier:
         return {"severity": "critical",
                 "label":    f"Restricted ({country})",
-                "details":  f"Maintainer in restricted country {country} â€” sanctions / export-control concern"}
+                "details":  f"Maintainer in restricted country {country} — sanctions / export-control concern"}
     if "Caution" in tier:
         return {"severity": "medium",
                 "label":    f"Caution ({country})",
@@ -2082,13 +2082,13 @@ def _check_country(row, context):
             "label":    f"Trusted ({country})",
             "details":  f"Maintainer in trusted country {country}"}
 
-# â”€â”€ Security Checks â€” JSON node â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ── Security Checks — JSON node ───────────────────────────────────────────────
 # Each check is a self-contained, JSON-serialisable record (no Python function
 # refs here). To add a new check:
 #   1. Append a new dict entry to _SECURITY_CHECKS_JSON below
 #   2. Write   def _check_<name>(row, context) -> dict:   anywhere in this file
 #   3. Add one line   "C6": _check_<name>   to _CHECK_FN_MAP
-# The UI, audit loop, and Raised Queries auto-pick it up â€” no other changes needed.
+# The UI, audit loop, and Raised Queries auto-pick it up — no other changes needed.
 _SECURITY_CHECKS_JSON = [
     {
         "id":          "C1",
@@ -2096,12 +2096,12 @@ _SECURITY_CHECKS_JSON = [
         "category":    "maintainer",
         "name":        "Maintainer Account Age",
         "description": "Flags packages whose primary GitHub maintainer account is "
-                       "suspiciously new â€” a common vector for typosquatting and "
+                       "suspiciously new — a common vector for typosquatting and "
                        "supply-chain hijacks (e.g. event-stream 2018, XZ Utils 2024).",
         "enabled":     True,
         "severity_thresholds": {
             "critical": {"days_lt": 30,  "label": "Account only {days}d old",
-                         "details": "GitHub account {handle} is less than 30 days old â€” high risk of namespace squat / hijack"},
+                         "details": "GitHub account {handle} is less than 30 days old — high risk of namespace squat / hijack"},
             "high":     {"days_lt": 180, "label": "New account ({days}d)",
                          "details": "GitHub account {handle} is less than 6 months old"},
             "medium":   {"days_lt": 730, "label": "Account {years}y old",
@@ -2121,7 +2121,7 @@ _SECURITY_CHECKS_JSON = [
         "severity_thresholds": {
             "critical": {"status": "Abandoned", "label": "Abandoned (2y+ stale)",
                          "details": "No maintenance in over 2 years"},
-            "medium":   {"status": "Aging",     "label": "Aging (6mâ€“2y)",
+            "medium":   {"status": "Aging",     "label": "Aging (6m–2y)",
                          "details": "Slowing maintenance"},
             "low":      {"status": "Unknown",   "label": "Status unknown",
                          "details": "Registry did not provide a last-updated date"},
@@ -2151,19 +2151,19 @@ _SECURITY_CHECKS_JSON = [
         "json_id":     "BUS_FACTOR",
         "category":    "ownership",
         "name":        "Bus Factor",
-        "description": "Flags packages with â‰¤5 maintainers and high download counts â€” "
+        "description": "Flags packages with ≤5 maintainers and high download counts — "
                        "a supply-chain single point of failure (left-pad, event-stream pattern).",
         "enabled":     True,
         "severity_thresholds": {
             "critical": {"condition": "bus_factor_and_downloads_gte_10m",
-                         "label": "Bus Factor: â‰¤5 maint + 10M+ dl",
-                         "details": "â‰¤5 maintainers for a package with {downloads} downloads"},
+                         "label": "Bus Factor: ≤5 maint + 10M+ dl",
+                         "details": "≤5 maintainers for a package with {downloads} downloads"},
             "high":     {"condition": "bus_factor",
-                         "label": "Bus Factor (â‰¤5 maintainers)",
-                         "details": "â‰¤5 maintainers + {downloads} downloads"},
+                         "label": "Bus Factor (≤5 maintainers)",
+                         "details": "≤5 maintainers + {downloads} downloads"},
             "medium":   {"condition": "small_team",
                          "label": "Small team (moderate dl)",
-                         "details": "â‰¤5 maintainers with {downloads} downloads"},
+                         "details": "≤5 maintainers with {downloads} downloads"},
             "pass":     {"label": "Healthy maintainer count",
                          "details": "More than 5 maintainers with publish rights"},
         },
@@ -2179,18 +2179,18 @@ _SECURITY_CHECKS_JSON = [
         "enabled":     True,
         "severity_thresholds": {
             "critical": {"tier": "Restricted", "label": "Restricted ({country})",
-                         "details": "Maintainer in restricted country {country} â€” sanctions / export-control concern"},
+                         "details": "Maintainer in restricted country {country} — sanctions / export-control concern"},
             "medium":   {"tier": "Caution",    "label": "Caution ({country})",
                          "details": "Maintainer in caution-tier country {country}"},
             "low":      {"tier": "Unknown",    "label": "Country unverified",
-                         "details": "Country could not be resolved â€” informational only"},
+                         "details": "Country could not be resolved — informational only"},
             "pass":     {"label": "Trusted ({country})",
                          "details": "Maintainer in trusted country {country}"},
         },
     },
 ]
 
-# â”€â”€ Check function map â€” one line per check â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ── Check function map — one line per check ────────────────────────────────────
 # Only bridge between the JSON node above and the Python logic below.
 # Add  "C6": _check_mycheck  here when you add a new check.
 _CHECK_FN_MAP: dict = {
@@ -2201,8 +2201,8 @@ _CHECK_FN_MAP: dict = {
     "C5": _check_country,
 }
 
-# â”€â”€ Rebuild _SECURITY_CHECKS for backward-compat with all existing references â”€â”€
-# All callers use c["id"], c["name"], c["fn"] â€” structure is unchanged.
+# ── Rebuild _SECURITY_CHECKS for backward-compat with all existing references ──
+# All callers use c["id"], c["name"], c["fn"] — structure is unchanged.
 # Disabled checks (enabled=False) are automatically excluded.
 _SECURITY_CHECKS = [
     {**chk, "fn": _CHECK_FN_MAP[chk["id"]]}
@@ -2219,21 +2219,21 @@ def _run_security_checks(row, token=""):
             r = chk["fn"](row, ctx)
         except Exception as _e:
             r = {"severity": "low",
-                 "label":    "ðŸŸ¢ Check error",
+                 "label":    "🟢 Check error",
                  "details":  f"{type(_e).__name__}: {_e}"}
         out.append({"id": chk["id"], "name": chk["name"], **r})
     return out
 
-# â”€â”€ Per-check lookup map and weights â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ── Per-check lookup map and weights ──────────────────────────────────────────
 _CHECK_META   = {chk["id"]: chk for chk in _SECURITY_CHECKS_JSON}
 # Max risk contribution per check (mirrors _risk_score() dimension weights)
 _CHECK_WEIGHT = {"C1": 10, "C2": 30, "C3": 25, "C4": 15, "C5": 20}
-# Severity â†’ human status label
+# Severity → human status label
 _SEV_TO_STATUS = {
     "pass": "pass", "low": "pass",
     "medium": "warning", "high": "fail", "critical": "fail",
 }
-# Severity â†’ fraction of check weight applied as risk_score
+# Severity → fraction of check weight applied as risk_score
 _SEV_FRAC = {"pass": 0.0, "low": 0.0, "medium": 0.5, "high": 0.8, "critical": 1.0}
 
 
@@ -2246,7 +2246,7 @@ def _extract_evidence(check_id: str, result: dict, row: dict) -> dict:
         return {"account_age_years": float(m.group(1)) if m else None}
 
     if check_id == "C2":
-        lu = str(row.get("Last Updated", "â€”") or "â€”")
+        lu = str(row.get("Last Updated", "—") or "—")
         months = None
         try:
             import datetime as _dt
@@ -2258,7 +2258,7 @@ def _extract_evidence(check_id: str, result: dict, row: dict) -> dict:
 
     if check_id == "C3":
         raw = str(row.get("CVEs", "") or "")
-        if raw in ("None", "â€”", "", "Timeout", "Error"):
+        if raw in ("None", "—", "", "Timeout", "Error"):
             return {"cve_count": 0, "cves": []}
         lst = [c.strip() for c in raw.split(",") if c.strip().startswith(("CVE", "GHSA"))]
         return {"cve_count": len(lst), "cves": lst[:10]}
@@ -2266,13 +2266,13 @@ def _extract_evidence(check_id: str, result: dict, row: dict) -> dict:
     if check_id == "C4":
         maint = str(row.get("Maintainer", "") or "")
         _m = re.search(r'\+\s*(\d+)', maint)
-        cnt = (1 + int(_m.group(1))) if _m else (1 if maint.strip() and maint not in ("â€”", "") else 0)
-        dl_raw = row.get("Downloads", "â€”")
-        dl_int = _parse_download_num(dl_raw) if dl_raw not in ("â€”", "N/A", "", None) else None
+        cnt = (1 + int(_m.group(1))) if _m else (1 if maint.strip() and maint not in ("—", "") else 0)
+        dl_raw = row.get("Downloads", "—")
+        dl_int = _parse_download_num(dl_raw) if dl_raw not in ("—", "N/A", "", None) else None
         return {"maintainer_count": cnt, "downloads": dl_int}
 
     if check_id == "C5":
-        country  = str(row.get("Country", "â€”") or "â€”")
+        country  = str(row.get("Country", "—") or "—")
         tier_raw = row.get("Country Tier", "") or _country_tier(country)
         tier     = tier_raw.split(" ", 1)[-1].split("(")[0].strip() if tier_raw else "Unknown"
         return {"country": country, "tier": tier}
@@ -2281,9 +2281,9 @@ def _extract_evidence(check_id: str, result: dict, row: dict) -> dict:
 
 
 def _calc_confidence(row: dict) -> float:
-    """Confidence 0â€“1: fraction of key data fields that are populated."""
+    """Confidence 0–1: fraction of key data fields that are populated."""
     fields = ["CVEs", "Country", "Maintainer", "Last Updated", "License", "Repo"]
-    blanks = {"â€”", "N/A", "", None, "Unknown", "â“ Unknown"}
+    blanks = {"—", "N/A", "", None, "Unknown", "❓ Unknown"}
     filled = sum(1 for f in fields if str(row.get(f, "")).strip() not in blanks)
     return round(filled / len(fields), 2)
 
@@ -2317,10 +2317,10 @@ def _split_maintainer(maintainer_str: str):
     maintainer_name: bare name without type prefix or "+N" suffix.
     """
     s = _fix_encoding(str(maintainer_str or "")).strip()
-    if not s or s in ("â€”", ""):
+    if not s or s in ("—", ""):
         return "unknown", ""
 
-    middle_dot = "Â·"  # U+00B7 MIDDLE DOT (used as separator)
+    middle_dot = "·"  # U+00B7 MIDDLE DOT (used as separator)
 
     if s.startswith("Org"):
         mtype = "org"
@@ -2337,13 +2337,13 @@ def _split_maintainer(maintainer_str: str):
     return mtype, name
 
 def _build_raised_queries(audit_rows: list) -> list:
-    """Build rich, structured Raised Query records for every package with â‰¥1 failed check.
+    """Build rich, structured Raised Query records for every package with ≥1 failed check.
 
     Each record contains nested library, overall_risk, checks (all 5), and metadata sections.
-    audit_rows â€” list of dicts from the Tab-2 audit loop (must include _results, _row_data).
+    audit_rows — list of dicts from the Tab-2 audit loop (must include _results, _row_data).
     """
     queries = []
-    seq = 0   # sequential counter â€” only incremented for packages that raise a query
+    seq = 0   # sequential counter — only incremented for packages that raise a query
     for row in audit_rows:
         results  = row.get("_results", [])
         row_data = row.get("_row_data", row)   # full row dict
@@ -2372,7 +2372,7 @@ def _build_raised_queries(audit_rows: list) -> list:
         # Confidence based on data completeness
         confidence = _calc_confidence(row_data)
 
-        # Per-check output â€” ALL 5 checks included (pass + fail)
+        # Per-check output — ALL 5 checks included (pass + fail)
         checks_out = []
         for chk, result in zip(_SECURITY_CHECKS, results):
             cid      = chk["id"]
@@ -2383,7 +2383,7 @@ def _build_raised_queries(audit_rows: list) -> list:
             evidence = _extract_evidence(cid, result, row_data)
             # Reason: strip all non-ASCII (emojis, symbols) from details string
             reason = re.sub(r'[^\x00-\x7F]+', '',
-                            result.get("details", "")).strip(" â€”Â·â€”")
+                            result.get("details", "")).strip(" —·—")
             checks_out.append({
                 "id":         meta.get("json_id", cid),
                 "category":   meta.get("category", "general"),
@@ -2412,20 +2412,20 @@ def _build_raised_queries(audit_rows: list) -> list:
         maint_type, maint_name = _split_maintainer(raw_maint)
 
         # Downloads as integer
-        dl_raw = row_data.get("Downloads", "â€”")
-        dl_int = _parse_download_num(dl_raw) if dl_raw not in ("â€”", "N/A", "", None) else None
+        dl_raw = row_data.get("Downloads", "—")
+        dl_int = _parse_download_num(dl_raw) if dl_raw not in ("—", "N/A", "", None) else None
 
-        # Description â€” fix encoding
-        description = _fix_encoding(str(row_data.get("Description", "") or "â€”"))
+        # Description — fix encoding
+        description = _fix_encoding(str(row_data.get("Description", "") or "—"))
 
         queries.append({
             "query_id": f"RQ-{seq:03d}",
             "library": {
-                "name":             row.get("Library", "â€”"),
-                "registry":         row.get("Registry", "â€”"),
+                "name":             row.get("Library", "—"),
+                "registry":         row.get("Registry", "—"),
                 "version":          row.get("Version", "N/A"),
                 "description":      description,
-                "license":          row_data.get("License", "â€”"),
+                "license":          row_data.get("License", "—"),
                 "downloads":        dl_int,
                 "repo":             row_data.get("Repo", "N/A"),
                 "maintainer_type":  maint_type,
@@ -2476,7 +2476,7 @@ def _build_supply_chain_json(audit_rows: list) -> list:
             rscore   = int(weight * _SEV_FRAC.get(sev, 0.0))
             evidence = _extract_evidence(cid, result, row_data)
             reason   = re.sub(r'[^\x00-\x7F]+', '',
-                              result.get("details", "")).strip(" â€”Â·â€”")
+                              result.get("details", "")).strip(" —·—")
             checks_out.append({
                 "id":         meta.get("json_id", cid),
                 "category":   meta.get("category", "general"),
@@ -2502,17 +2502,17 @@ def _build_supply_chain_json(audit_rows: list) -> list:
         # Split maintainer + fix encoding + parse downloads as int
         raw_maint   = _fix_encoding(str(row_data.get("Maintainer", "") or ""))
         maint_type, maint_name = _split_maintainer(raw_maint)
-        dl_raw  = row_data.get("Downloads", "â€”")
-        dl_int  = _parse_download_num(dl_raw) if dl_raw not in ("â€”", "N/A", "", None) else None
-        desc    = _fix_encoding(str(row_data.get("Description", "") or "â€”"))
+        dl_raw  = row_data.get("Downloads", "—")
+        dl_int  = _parse_download_num(dl_raw) if dl_raw not in ("—", "N/A", "", None) else None
+        desc    = _fix_encoding(str(row_data.get("Description", "") or "—"))
 
         records.append({
             "library": {
-                "name":            row.get("Library", "â€”"),
-                "registry":        row.get("Registry", "â€”"),
+                "name":            row.get("Library", "—"),
+                "registry":        row.get("Registry", "—"),
                 "version":         row.get("Version", "N/A"),
                 "description":     desc,
-                "license":         row_data.get("License", "â€”"),
+                "license":         row_data.get("License", "—"),
                 "downloads":       dl_int,
                 "repo":            row_data.get("Repo", "N/A"),
                 "maintainer_type": maint_type,
@@ -2542,17 +2542,17 @@ def _aggregate_severity(check_results):
 
 def _severity_badge(severity):
     """Render a severity as a colored badge string for tables."""
-    return f"{_SEV_EMOJI.get(severity,'âšª')} {_SEV_LABEL.get(severity,'â€”')}"
+    return f"{_SEV_EMOJI.get(severity,'⚪')} {_SEV_LABEL.get(severity,'—')}"
 
 def _no_source_flag(repo: str) -> str:
-    """Flag packages with no source repository â€” zero transparency = red flag."""
-    if not repo or str(repo).strip() in ("N/A", "â€”", "", "None", "null"):
-        return "ðŸš¨ No Source"
-    return "âœ…"
+    """Flag packages with no source repository — zero transparency = red flag."""
+    if not repo or str(repo).strip() in ("N/A", "—", "", "None", "null"):
+        return "🚨 No Source"
+    return "✅"
 
 def _parse_download_num(s) -> int:
     """Convert formatted download strings ('452.4M', '16K') back to integers."""
-    if not s or s in ("â€”", "N/A", "", None):
+    if not s or s in ("—", "N/A", "", None):
         return 0
     s = str(s).strip().upper().replace(",", "")
     mult = 1
@@ -2566,7 +2566,7 @@ def _parse_download_num(s) -> int:
 
 def _single_maintainer_risk(maintainer: str, downloads) -> str:
     """
-    Flag packages with â‰¤5 maintainers AND â‰¥1M downloads.
+    Flag packages with ≤5 maintainers AND ≥1M downloads.
     Classic supply-chain risk pattern (cf. left-pad incident).
     Maintainer strings encode count as '+N' suffix, e.g. 'username +3' = 4 total.
     """
@@ -2575,12 +2575,12 @@ def _single_maintainer_risk(maintainer: str, downloads) -> str:
 
     # Parse total maintainer count from '+N' suffix
     _m = re.search(r'\+\s*(\d+)', s)
-    count = (1 + int(_m.group(1))) if _m else (1 if s.strip() and s not in ("â€”", "") else 0)
+    count = (1 + int(_m.group(1))) if _m else (1 if s.strip() and s not in ("—", "") else 0)
 
     if 0 < count <= 5 and dl >= 1_000_000:
-        return "âš ï¸ Bus Factor"   # critical single point of failure
+        return "⚠️ Bus Factor"   # critical single point of failure
     if 0 < count <= 5 and dl >= 100_000:
-        return "â„¹ï¸ Solo"          # small team but moderate risk
+        return "ℹ️ Solo"          # small team but moderate risk
     return ""
 
 def _risk_score(row, rules=None) -> int:
@@ -2589,16 +2589,16 @@ def _risk_score(row, rules=None) -> int:
     Combines status, license, CVE, country, source, and maintainer signals.
 
     Breakdown (max 100):
-      â€¢ Status     (30) â€” Active=30, Aging=15, Unknown=10, Abandoned=0
-      â€¢ License    (20) â€” Safe=20, Copyleft/Other=10, Missing=0
-      â€¢ CVEs       (20) â€” None=20, has CVE=0
-      â€¢ Country    (15) â€” Trusted=15, Caution=10, Unrated=8, Restricted=0
-      â€¢ Source     (10) â€” has repo=10, none=0
-      â€¢ Maintainer (5)  â€” multi or low-dl solo=5, Bus Factor=0
+      • Status     (30) — Active=30, Aging=15, Unknown=10, Abandoned=0
+      • License    (20) — Safe=20, Copyleft/Other=10, Missing=0
+      • CVEs       (20) — None=20, has CVE=0
+      • Country    (15) — Trusted=15, Caution=10, Unrated=8, Restricted=0
+      • Source     (10) — has repo=10, none=0
+      • Maintainer (5)  — multi or low-dl solo=5, Bus Factor=0
 
     Optional: pass `rules` (loaded via _load_custom_rules) to apply user-defined
     score deductions for matched rules:
-      â€¢ critical = -50  â€¢ high = -25  â€¢ medium = -10  â€¢ low = -3
+      • critical = -50  • high = -25  • medium = -10  • low = -3
     Score is clamped to [0, 100] so multiple matches never break the band logic.
     """
     score = 0
@@ -2611,9 +2611,9 @@ def _risk_score(row, rules=None) -> int:
     lr = row.get("License Risk", "") or _license_risk(row.get("License", ""))
     if "Safe" in lr:                  score += 20
     elif "Copyleft" in lr or "Other" in lr: score += 10
-    # CVE â€” also treat Timeout/Error/N/A as no confirmed CVEs for scoring purposes
+    # CVE — also treat Timeout/Error/N/A as no confirmed CVEs for scoring purposes
     cves = str(row.get("CVEs", "") or "")
-    if cves in ("None", "â€”", "", "Timeout", "Error", "N/A"):     score += 20
+    if cves in ("None", "—", "", "Timeout", "Error", "N/A"):     score += 20
     # Country tier (only if country has been resolved)
     ct = row.get("Country Tier", "") or _country_tier(row.get("Country", ""))
     if "Trusted" in ct:    score += 15
@@ -2621,14 +2621,14 @@ def _risk_score(row, rules=None) -> int:
     elif "Unrated" in ct:  score += 8
     # Source repo
     src = row.get("Repo", "")
-    if src and str(src).strip() not in ("N/A", "â€”", "", "None"):
+    if src and str(src).strip() not in ("N/A", "—", "", "None"):
         score += 10
     # Maintainer / bus factor
     sm = row.get("Single Maintainer", "") or _single_maintainer_risk(
             row.get("Maintainer", ""), row.get("Downloads", ""))
     if "Bus Factor" not in sm:
         score += 5
-    # â”€â”€ Custom rules penalty (Phase 2: user-uploaded blocklist) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # ── Custom rules penalty (Phase 2: user-uploaded blocklist) ────────────
     if rules:
         for m in _custom_rule_match(row, rules):
             score -= _SEV_PENALTY.get(m["severity"], 0)
@@ -2641,7 +2641,7 @@ def _risk_band(score: int) -> str:
     if score >= 40: return f"High ({score})"
     return f"Critical ({score})"
 
-# â”€â”€ Custom Rules / Blocklist (user-uploaded CSV/JSON) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ── Custom Rules / Blocklist (user-uploaded CSV/JSON) ─────────────────────────
 # Lets users define their own rules (e.g. banned packages, restricted licenses)
 # that contribute to the existing 4-tier Risk classification via score deductions.
 import csv as _csv_mod
@@ -2649,9 +2649,9 @@ import io as _io_mod
 _VALID_FIELDS      = {"library","maintainer","country","license","registry","version"}
 _VALID_MATCH_TYPES = {"exact","contains","regex"}
 _VALID_SEVERITY    = {"low","medium","high","critical"}
-_SEV_DEFAULT_EMOJI = {"low":"ðŸŸ¢","medium":"ðŸŸ¡","high":"ðŸŸ ","critical":"ðŸš¨"}
+_SEV_DEFAULT_EMOJI = {"low":"🟢","medium":"🟡","high":"🟠","critical":"🚨"}
 _SEV_PENALTY       = {"low":3,"medium":10,"high":25,"critical":50}
-# Rule field name â†’ DataFrame column
+# Rule field name → DataFrame column
 _FIELD_TO_COL = {
     "library":"Library", "maintainer":"Maintainer", "country":"Country",
     "license":"License", "registry":"Registry",     "version":"Version",
@@ -2690,7 +2690,7 @@ def _load_custom_rules(uploaded_file):
     out = []
     for i, r in enumerate(rows, start=1):
         if not isinstance(r, dict):
-            warnings.append(f"Row {i}: not an object â€” skipped")
+            warnings.append(f"Row {i}: not an object — skipped")
             continue
         rid    = str(r.get("rule_id","") or f"R{i:03d}").strip()
         field  = str(r.get("field","") or "").strip().lower()
@@ -2699,20 +2699,20 @@ def _load_custom_rules(uploaded_file):
         sev    = str(r.get("severity","") or "").strip().lower()
 
         if field not in _VALID_FIELDS:
-            warnings.append(f"Row {i} ({rid}): bad field '{field}' â€” skipped"); continue
+            warnings.append(f"Row {i} ({rid}): bad field '{field}' — skipped"); continue
         if mtype not in _VALID_MATCH_TYPES:
-            warnings.append(f"Row {i} ({rid}): bad match_type '{mtype}' â€” skipped"); continue
+            warnings.append(f"Row {i} ({rid}): bad match_type '{mtype}' — skipped"); continue
         if sev not in _VALID_SEVERITY:
-            warnings.append(f"Row {i} ({rid}): bad severity '{sev}' â€” skipped"); continue
+            warnings.append(f"Row {i} ({rid}): bad severity '{sev}' — skipped"); continue
         if not patt:
-            warnings.append(f"Row {i} ({rid}): empty pattern â€” skipped"); continue
+            warnings.append(f"Row {i} ({rid}): empty pattern — skipped"); continue
 
         compiled = None
         if mtype == "regex":
             try:
                 compiled = re.compile(patt, re.IGNORECASE)
             except re.error as _re_err:
-                warnings.append(f"Row {i} ({rid}): regex error â€” {_re_err}"); continue
+                warnings.append(f"Row {i} ({rid}): regex error — {_re_err}"); continue
 
         out.append({
             "rule_id":    rid,
@@ -2729,7 +2729,7 @@ def _load_custom_rules(uploaded_file):
 def _custom_rule_match(row, rules):
     """
     Return the list of rule dicts that match this row.
-    Pure function â€” no side effects. Mirrors _single_maintainer_risk pattern.
+    Pure function — no side effects. Mirrors _single_maintainer_risk pattern.
     """
     if not rules:
         return []
@@ -2739,7 +2739,7 @@ def _custom_rule_match(row, rules):
         if not col:
             continue
         val = str(row.get(col, "") or "")
-        if not val or val.strip() in ("â€”","N/A","None"):
+        if not val or val.strip() in ("—","N/A","None"):
             continue
 
         hit = False
@@ -2760,7 +2760,7 @@ def _custom_flags_display(matched):
         return ""
     return ", ".join(f"{m['emoji']} {m['name']}" for m in matched)
 
-# â”€â”€ Maintainer helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ── Maintainer helpers ─────────────────────────────────────────────────────────
 _ORG_TOKENS = {
     "inc","llc","ltd","corp","gmbh","foundation","project","team","group",
     "community","labs","software","systems","technologies","solutions",
@@ -2769,27 +2769,27 @@ _ORG_TOKENS = {
 
 def _m_org(name):
     """Format as Organisation."""
-    return f"Org Â· {name}" if name and name != "â€”" else "Org"
+    return f"Org · {name}" if name and name != "—" else "Org"
 
 def _m_user(name):
     """Format as Individual."""
-    return f"User Â· {name}" if name and name != "â€”" else "User"
+    return f"User · {name}" if name and name != "—" else "User"
 
 def _m_auto(name):
     """Best-guess: Org or User based on the name string."""
-    if not name or name in ("â€”","N/A",""): return "â€”"
+    if not name or name in ("—","N/A",""): return "—"
     name = str(name).strip()
-    # Multiple authors (comma list) â†’ team / org
+    # Multiple authors (comma list) → team / org
     if "," in name:
         first = name.split(",")[0].strip()
         rest  = name.count(",")
-        return f"Org Â· {first}" + (f" +{rest}" if rest else "")
+        return f"Org · {first}" + (f" +{rest}" if rest else "")
     words = name.lower().split()
     if any(w in _ORG_TOKENS for w in words):
         return _m_org(name)
     return _m_user(name)
 
-# â”€â”€ Search relevance guard â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ── Search relevance guard ────────────────────────────────────────────────────
 _STOP = {"the","a","an","and","or","of","for","in","to","is","are","by","from",
          "with","on","at","as","its","it","this","that","be","was","were"}
 
@@ -2799,7 +2799,7 @@ def _name_clean(s: str) -> str:
              .replace("/","").replace(".","").replace(" ",""))
 
 def _search_tokens(query: str) -> list:
-    # Keep tokens â‰¥ 2 chars (so "UI", "JS", "CSS" survive â€” they're critical
+    # Keep tokens ≥ 2 chars (so "UI", "JS", "CSS" survive — they're critical
     # disambiguators: "Radix UI" must require "ui", not just "radix").
     return [t.lower() for t in query.split()
             if len(t) >= 2 and t.lower() not in _STOP]
@@ -2810,11 +2810,11 @@ def _filter_search(data: list, query: str) -> list:
 
     Two-layer rules:
       1. ALL significant query tokens must appear in the cleaned package name
-         (e.g. "Radix UI" â†’ must contain BOTH 'radix' AND 'ui').
+         (e.g. "Radix UI" → must contain BOTH 'radix' AND 'ui').
       2. Name's first component (before first .  -  _  /  :) must START with
          the primary query token. This rejects compound names like
-         "MahApps.Metro.IconPacks.RadixIcons" for query "Radix UI" â€” the
-         first component "MahApps" doesn't start with "radix" â†’ REJECT.
+         "MahApps.Metro.IconPacks.RadixIcons" for query "Radix UI" — the
+         first component "MahApps" doesn't start with "radix" → REJECT.
       3. Return at most the single highest-scoring match.
     """
     if not data:
@@ -2841,37 +2841,37 @@ def _filter_search(data: list, query: str) -> list:
         if not first_seg_clean:
             return False
         # Accept if either:
-        #   â€¢ full cleaned name starts with primary token
-        #   â€¢ first component starts with primary
-        #   â€¢ primary starts with first component (handles shorter-name cases)
+        #   • full cleaned name starts with primary token
+        #   • first component starts with primary
+        #   • primary starts with first component (handles shorter-name cases)
         return (full_clean.startswith(primary) or
                 first_seg_clean.startswith(primary) or
                 (primary.startswith(first_seg_clean) and len(first_seg_clean) >= 3))
 
-    # Pass 1 â€” strict: all tokens present AND first component matches primary
+    # Pass 1 — strict: all tokens present AND first component matches primary
     matched = [r for r in data
                if score(r) >= len(tokens) and first_component_matches(r)]
 
-    # Pass 2 â€” slightly looser: all tokens present (drop first-component rule)
+    # Pass 2 — slightly looser: all tokens present (drop first-component rule)
     # Only used if strict pass returns nothing, to avoid empty-result cliffs.
     if not matched:
         matched = [r for r in data if score(r) >= len(tokens)
                    and first_component_matches(r)]
 
     if not matched:
-        return []   # nothing truly relevant â€” show nothing rather than noise
+        return []   # nothing truly relevant — show nothing rather than noise
 
     return sorted(matched, key=score, reverse=True)[:1]
 
-# â”€â”€ OSV CVE check (returns CVE string only) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ── OSV CVE check (returns CVE string only) ────────────────────────────────────
 OSV_ECO = {"PyPI","npm","RubyGems","crates.io","Packagist","Maven","NuGet","Go"}
 
 def check_vuln(pkg, eco):
-    if eco not in OSV_ECO: return "â€”"
+    if eco not in OSV_ECO: return "—"
     try:
         r = requests.post("https://api.osv.dev/v1/query",
                           json={"package":{"name":pkg,"ecosystem":eco}}, timeout=6)
-        if r.status_code != 200: return "â€”"
+        if r.status_code != 200: return "—"
         vulns = r.json().get("vulns",[])
         if not vulns: return "None"
         cves = list(dict.fromkeys([
@@ -2880,13 +2880,13 @@ def check_vuln(pkg, eco):
             for x in vulns
         ]))
         return ", ".join(cves[:4])
-    except: return "â€”"
+    except: return "—"
 
 def _has_cve(cve_str):
-    return cve_str not in ("â€”","None","","Timeout","Error") and bool(cve_str)
+    return cve_str not in ("—","None","","Timeout","Error") and bool(cve_str)
 
-# â”€â”€ Live CVE feed â€” detailed data for the Profile tab â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-# Registry display name â†’ OSV ecosystem identifier
+# ── Live CVE feed — detailed data for the Profile tab ─────────────────────────
+# Registry display name → OSV ecosystem identifier
 _REG_TO_OSV_ECO = {
     "NPM":           "npm",
     "PyPI":          "PyPI",
@@ -2904,7 +2904,7 @@ def _parse_osv_entry(v: dict) -> dict:
     aliases = [a for a in (v.get("aliases") or []) if a.startswith("CVE")]
     cve_id  = aliases[0] if aliases else vid
 
-    # Severity â€” prefer database_specific.severity (human-readable label)
+    # Severity — prefer database_specific.severity (human-readable label)
     db_spec  = v.get("database_specific") or {}
     severity = (db_spec.get("severity") or "UNKNOWN").upper()
 
@@ -2956,8 +2956,8 @@ def _parse_osv_entry(v: dict) -> dict:
 def _fetch_gh_repo_advisories(gh_path: str, token: str = None) -> list:
     """
     Fetch security advisories published directly against a GitHub repository.
-    e.g. vercel/next.js â†’ catches CVE-2026-44575, CVE-2026-45109 the moment
-    Vercel/the reporter publishes the GHSA â€” days/weeks before NVD processes them.
+    e.g. vercel/next.js → catches CVE-2026-44575, CVE-2026-45109 the moment
+    Vercel/the reporter publishes the GHSA — days/weeks before NVD processes them.
     Endpoint: GET /repos/{owner}/{repo}/security-advisories (public, no token needed)
     """
     if not gh_path or "/" not in gh_path:
@@ -3029,12 +3029,12 @@ def _fetch_gh_repo_advisories(gh_path: str, token: str = None) -> list:
 def _fetch_nvd_cves(pkg_name: str, eco: str) -> list:
     """
     Query NVD (National Vulnerability Database) API v2 for CVEs related to a package.
-    NVD is the *primary* CVE registry â€” it often has fresh CVEs days/weeks before
+    NVD is the *primary* CVE registry — it often has fresh CVEs days/weeks before
     OSV or GitHub Advisory DB ingest them, making it essential for catching 0-days
     and newly disclosed vulnerabilities like CVE-2026-44575, CVE-2026-45109.
     """
     # Build search keyword variants
-    # e.g. npm "next" â†’ also try "next.js" since NVD descriptions say "Next.js"
+    # e.g. npm "next" → also try "next.js" since NVD descriptions say "Next.js"
     search_terms = [pkg_name]
     if eco == "npm" and not pkg_name.endswith(".js"):
         search_terms.append(f"{pkg_name}.js")
@@ -3059,7 +3059,7 @@ def _fetch_nvd_cves(pkg_name: str, eco: str) -> list:
                 headers={"User-Agent": "RegistryIntelligencePlatform/1.0"})
 
             if r.status_code == 429:
-                break          # NVD rate-limited (5 req/30s without API key) â€” stop
+                break          # NVD rate-limited (5 req/30s without API key) — stop
             if r.status_code != 200:
                 continue
 
@@ -3069,18 +3069,18 @@ def _fetch_nvd_cves(pkg_name: str, eco: str) -> list:
                 if not cve_id or cve_id in seen_ids:
                     continue
 
-                # Relevance filter â€” description must mention the package name
+                # Relevance filter — description must mention the package name
                 descs     = cve_obj.get("descriptions", [])
                 desc_text = next((d["value"] for d in descs if d.get("lang") == "en"), "")
                 pkg_norm  = pkg_name.lower().replace("-","").replace(".","")
                 desc_norm = desc_text.lower().replace("-","").replace(".","")
                 term_norm = term.lower().replace("-","").replace(".","")
                 if pkg_norm not in desc_norm and term_norm not in desc_norm:
-                    continue   # unrelated CVE â€” skip
+                    continue   # unrelated CVE — skip
 
                 seen_ids.add(cve_id)
 
-                # CVSS score + severity â€” prefer V3.1 â†’ V3.0 â†’ V2
+                # CVSS score + severity — prefer V3.1 → V3.0 → V2
                 severity   = "UNKNOWN"
                 cvss_score = None
                 metrics    = cve_obj.get("metrics", {})
@@ -3127,10 +3127,10 @@ def fetch_live_cves(pkg_name: str, reg_name: str,
                     gh_path: str = None, token: str = None) -> list:
     """
     Fetch full CVE / advisory details for a package from 4 sources:
-      1. OSV.dev               â€” broad ecosystem coverage
-      2. GitHub Advisory DB    â€” ecosystem-wide advisories
-      3. NVD                   â€” primary CVE database (fresh, official CVSS)
-      4. GitHub Repo Advisoriesâ€” repo-specific, published before NVD processes them
+      1. OSV.dev               — broad ecosystem coverage
+      2. GitHub Advisory DB    — ecosystem-wide advisories
+      3. NVD                   — primary CVE database (fresh, official CVSS)
+      4. GitHub Repo Advisories— repo-specific, published before NVD processes them
                                  (catches CVE-2026-44575, CVE-2026-45109, etc.)
     Results are deduplicated and sorted by severity then date.
     """
@@ -3140,7 +3140,7 @@ def fetch_live_cves(pkg_name: str, reg_name: str,
 
     results, seen_ids = [], set()
 
-    # â”€â”€ Source 1: OSV.dev â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # ── Source 1: OSV.dev ─────────────────────────────────────────────────────
     try:
         r = requests.post(
             "https://api.osv.dev/v1/query",
@@ -3155,7 +3155,7 @@ def fetch_live_cves(pkg_name: str, reg_name: str,
     except Exception:
         pass
 
-    # â”€â”€ Source 2: GitHub Advisory Database â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # ── Source 2: GitHub Advisory Database ───────────────────────────────────
     try:
         r2 = requests.get(
             "https://api.github.com/advisories",
@@ -3199,8 +3199,8 @@ def fetch_live_cves(pkg_name: str, reg_name: str,
     except Exception:
         pass
 
-    # â”€â”€ Source 3: NVD (National Vulnerability Database) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-    # NVD is the authoritative primary registry â€” catches fresh CVEs (days/weeks)
+    # ── Source 3: NVD (National Vulnerability Database) ──────────────────────
+    # NVD is the authoritative primary registry — catches fresh CVEs (days/weeks)
     # before OSV or GitHub Advisory ingest them.
     # Specifically needed for: CVE-2026-44575, CVE-2026-45109, CVE-2025-30218, etc.
     try:
@@ -3215,7 +3215,7 @@ def fetch_live_cves(pkg_name: str, reg_name: str,
                     seen_ids.add(_nvd_cve)
                     results.append(entry)
             else:
-                # Already have it â€” but if NVD has a better CVSS score, enrich it
+                # Already have it — but if NVD has a better CVSS score, enrich it
                 for existing in results:
                     if existing.get("cve_id") == _nvd_cve:
                         if existing.get("cvss_score") is None and entry.get("cvss_score"):
@@ -3226,9 +3226,9 @@ def fetch_live_cves(pkg_name: str, reg_name: str,
     except Exception:
         pass
 
-    # â”€â”€ Source 4: GitHub Repo Security Advisories â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # ── Source 4: GitHub Repo Security Advisories ────────────────────────────
     # Published directly by the repo maintainers (e.g. vercel/next.js).
-    # These appear IMMEDIATELY on disclosure â€” days/weeks before NVD processes them.
+    # These appear IMMEDIATELY on disclosure — days/weeks before NVD processes them.
     # This is the fastest source for fresh CVEs like CVE-2026-44575, CVE-2026-45109.
     if gh_path:
         try:
@@ -3255,13 +3255,13 @@ def fetch_live_cves(pkg_name: str, reg_name: str,
         except Exception:
             pass
 
-    # Sort: CRITICAL â†’ HIGH â†’ MEDIUM â†’ LOW â†’ UNKNOWN, then newest first within tier
+    # Sort: CRITICAL → HIGH → MEDIUM → LOW → UNKNOWN, then newest first within tier
     _sev_rank = {"CRITICAL":0,"HIGH":1,"MEDIUM":2,"LOW":3,"UNKNOWN":4,"":4}
     results.sort(key=lambda x: (
         _sev_rank.get(x.get("severity","UNKNOWN"), 4),
         "~" if not x.get("published") else x["published"]  # lexicographic desc trick
     ), reverse=False)
-    # secondary sort: newest first inside each severity tier â€” re-sort stably
+    # secondary sort: newest first inside each severity tier — re-sort stably
     from operator import itemgetter
     results.sort(key=lambda x: (
         _sev_rank.get(x.get("severity","UNKNOWN"), 4),
@@ -3269,7 +3269,7 @@ def fetch_live_cves(pkg_name: str, reg_name: str,
     ))
     return results
 
-# â”€â”€ Base adapter â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ── Base adapter ───────────────────────────────────────────────────────────────
 class BaseAdapter:
     TTL = 86400
     def fetch(self, pkg, **kw): raise NotImplementedError
@@ -3278,11 +3278,11 @@ class BaseAdapter:
 def _gh_owner_from_url(url) -> str:
     """
     Extract the GitHub owner (org/user) from a repository URL.
-      "git+https://github.com/facebook/react.git" â†’ "facebook"
-      "https://github.com/axios/axios"            â†’ "axios"
-      "https://gitlab.com/foo/bar"                â†’ ""   (not GitHub)
+      "git+https://github.com/facebook/react.git" → "facebook"
+      "https://github.com/axios/axios"            → "axios"
+      "https://gitlab.com/foo/bar"                → ""   (not GitHub)
     Used for country lookup so we resolve the REAL upstream org, not the
-    registry's publishing-account name (npm "fb" â†’ wrong â†’ Germany).
+    registry's publishing-account name (npm "fb" → wrong → Germany).
     """
     if not url:
         return ""
@@ -3292,44 +3292,44 @@ def _gh_owner_from_url(url) -> str:
     m = re.search(r"github\.com[/:]([\w\-\.]+)/", url, flags=re.IGNORECASE)
     return m.group(1) if m else ""
 
-def _row(lib, reg, ver="N/A", desc="â€”", lic="â€”", dl=0,
-         maintainer="â€”", cves="â€”", repo="N/A", last_updated="â€”",
+def _row(lib, reg, ver="N/A", desc="—", lic="—", dl=0,
+         maintainer="—", cves="—", repo="N/A", last_updated="—",
          gh_owner=""):
     """
     `gh_owner` is the GitHub org/user from the upstream source repo (e.g.
     "facebook" for React on npm). Used internally for country lookup so we
     look up the REAL maintainer's location, not a registry-specific bot account.
-    Dropped from the displayed dataframe â€” never shown to the user.
+    Dropped from the displayed dataframe — never shown to the user.
     """
     return {
         "Library":      lib,
         "Registry":     reg,
         "Version":      ver or "N/A",
-        "Maintainer":   maintainer or "â€”",
-        "CVEs":         cves or "â€”",
+        "Maintainer":   maintainer or "—",
+        "CVEs":         cves or "—",
         "License":      _lic(lic),
         "Downloads":    _fmt_dl(dl),
         "Last Updated": _fmt_date(last_updated),
         "Description":  _trunc(desc),
         # _clean_repo_url normalises every adapter's URL: strips git+ prefix,
-        # converts git:// â†’ https://, removes .git suffix, ensures https://
+        # converts git:// → https://, removes .git suffix, ensures https://
         # This guarantees every Source button gets a clickable, working link.
         "Repo":         _clean_repo_url(repo),
         "_dl_raw":      int(dl) if dl else 0,
         "_gh_owner":    gh_owner or "",          # hidden: used by country lookup
     }
 
-# â”€â”€ GitHub profile helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ── GitHub profile helpers ────────────────────────────────────────────────────
 def _gh_handle(maintainer_str):
     """Extract (github_handle, is_org) from a Maintainer cell value."""
-    if not maintainer_str or maintainer_str in ("â€”",):
+    if not maintainer_str or maintainer_str in ("—",):
         return None, False
     is_org = maintainer_str.startswith("Org")
-    name   = maintainer_str.split("Â·", 1)[1].strip() if "Â·" in maintainer_str else maintainer_str
+    name   = maintainer_str.split("·", 1)[1].strip() if "·" in maintainer_str else maintainer_str
     name   = name.split("+")[0].strip()          # drop "+N more"
     if not name or "maintainer" in name.lower():
         return None, is_org
-    # Maven groupId heuristic: com.google.guava â†’ google
+    # Maven groupId heuristic: com.google.guava → google
     if "." in name:
         parts = name.split(".")
         if parts[0] in ("com","org","io","net","edu") and len(parts) > 1:
@@ -3345,7 +3345,7 @@ def _gh_get(url, token=None):
         if r.status_code == 200:
             return r.json()
         if r.status_code == 403:
-            return {"_rate_limited": True}      # sentinel â€” callers check for "login"
+            return {"_rate_limited": True}      # sentinel — callers check for "login"
         if r.status_code == 404:
             return {"_not_found": True}
         return None
@@ -3367,7 +3367,7 @@ def _gh_is_rate_limited(token=None):
 def _is_versioned_variant(repo_name: str, base: str) -> bool:
     """
     Return True when repo_name looks like `base` followed by a bare version
-    number â€” e.g. "junit4" for base "junit", or "log4j2" for "log4j".
+    number — e.g. "junit4" for base "junit", or "log4j2" for "log4j".
     Non-versioned suffixes like "-framework" or "-core" return False.
     Also checks normalized (hyphen/underscore-stripped) forms so that
     "spring-boot-3" is recognised as versioned even when base is "springboot".
@@ -3389,27 +3389,27 @@ def _is_versioned_variant(repo_name: str, base: str) -> bool:
     return False
 
 
-_GH_SEARCH_CACHE: dict = {}   # module-level cache â†’ survives dropdown reruns
+_GH_SEARCH_CACHE: dict = {}   # module-level cache → survives dropdown reruns
 
 def _gh_search_repo(pkg_name: str, token=None):
     """
     Search GitHub for a library's official repository when the registry
-    doesn't provide a GitHub URL (e.g. Maven â†’ mvnrepository.com).
+    doesn't provide a GitHub URL (e.g. Maven → mvnrepository.com).
 
     Algorithm (single stars-sorted request, 4 passes):
-      Pass 1 â€“ exact repo-name match, not a versioned variant
-               "junit"         â†’ skips "junit4"/"junit5", finds nothing exact
-      Pass 2 â€“ starts-with match, NOT a versioned variant
-               "junit"         â†’ skips "junit4", picks "junit-framework" âœ…
-               "bootstrap"     â†’ picks "bootstrap"  (twbs/bootstrap)   âœ…
-               "spring-boot"   â†’ picks "spring-boot"                   âœ…
-      Pass 3 â€“ exact match even if versioned (fallback)
-      Pass 4 â€“ starts-with even if versioned (last resort)
+      Pass 1 – exact repo-name match, not a versioned variant
+               "junit"         → skips "junit4"/"junit5", finds nothing exact
+      Pass 2 – starts-with match, NOT a versioned variant
+               "junit"         → skips "junit4", picks "junit-framework" ✅
+               "bootstrap"     → picks "bootstrap"  (twbs/bootstrap)   ✅
+               "spring-boot"   → picks "spring-boot"                   ✅
+      Pass 3 – exact match even if versioned (fallback)
+      Pass 4 – starts-with even if versioned (last resort)
 
     Base-name extraction:
-      "junit:junit"                         â†’ "junit"
-      "@angular/core"                       â†’ "core"
-      "org.springframework.boot:spring-boot"â†’ "spring-boot"
+      "junit:junit"                         → "junit"
+      "@angular/core"                       → "core"
+      "org.springframework.boot:spring-boot"→ "spring-boot"
     """
     import re as _re
 
@@ -3445,7 +3445,7 @@ def _gh_search_repo(pkg_name: str, token=None):
             _GH_SEARCH_CACHE[_cache_key] = val
             return val
 
-        # Pass 1: exact name, non-versioned  (e.g. "bootstrap" â†’ twbs/bootstrap)
+        # Pass 1: exact name, non-versioned  (e.g. "bootstrap" → twbs/bootstrap)
         # Also matches normalised: "springboot" base == "spring-boot" repo name
         for item in pool:
             name = item.get("name", "").lower()
@@ -3453,8 +3453,8 @@ def _gh_search_repo(pkg_name: str, token=None):
             if (name == base.lower() or name_n == base_n) and not _is_versioned_variant(name, base):
                 return _ret(item["full_name"])
 
-        # Pass 2: starts-with, non-versioned  (e.g. "junit" â†’ junit-framework, skips junit4)
-        # Normalised starts-with so "springboot" still picks up "spring-boot-â€¦" variants
+        # Pass 2: starts-with, non-versioned  (e.g. "junit" → junit-framework, skips junit4)
+        # Normalised starts-with so "springboot" still picks up "spring-boot-…" variants
         for item in pool:
             name = item.get("name", "").lower()
             name_n = name.replace("-", "").replace("_", "")
@@ -3482,7 +3482,7 @@ def _gh_search_repo(pkg_name: str, token=None):
 def gh_profile(handle, is_org, token=None):
     """
     Fetch GitHub profile.  is_org can be True, False, or None (unknown).
-    Tries both /orgs/ and /users/ â€” order depends on the hint.
+    Tries both /orgs/ and /users/ — order depends on the hint.
     """
     order = ["orgs","users"] if is_org is True else ["users","orgs"]
     rate_hit = False
@@ -3510,24 +3510,24 @@ def _resolve_gh_handle(maintainer_str: str, repo_url: str = ""):
     Multi-strategy GitHub handle extraction.
 
     Priority order:
-      1. Repo-URL owner  â€” most accurate: github.com/twbs/bootstrap â†’ "twbs"
+      1. Repo-URL owner  — most accurate: github.com/twbs/bootstrap → "twbs"
          This is the org/user that actually OWNS the library on GitHub.
-      2. Maintainer string fallback  â€” "User Â· mdo +3" â†’ "mdo"
+      2. Maintainer string fallback  — "User · mdo +3" → "mdo"
          Used only when there is no GitHub repo URL.
 
-    Returns (handle, is_org)  â€” is_org may be None when unknown (gh_profile resolves it).
+    Returns (handle, is_org)  — is_org may be None when unknown (gh_profile resolves it).
     """
     _NOISE = {"library","unknown","homebrew","docker","official","community",
               "chocolatey","microsoft","maintainer","maintainers"}
 
-    # â”€â”€ Strategy 1: repo URL owner (primary â€” definitive GitHub identity) â”€â”€â”€â”€â”€â”€
+    # ── Strategy 1: repo URL owner (primary — definitive GitHub identity) ──────
     gh_path = _repo_url_to_gh(repo_url)
     if gh_path:
         owner = gh_path.split("/")[0]
         if owner and owner.lower() not in _NOISE:
             return owner, None      # is_org unknown; gh_profile() will figure it out
 
-    # â”€â”€ Strategy 2: maintainer string (fallback when no repo URL) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # ── Strategy 2: maintainer string (fallback when no repo URL) ─────────────
     h, is_org = _gh_handle(maintainer_str)
     if h and h.lower() not in _NOISE:
         return h, is_org
@@ -3560,7 +3560,7 @@ def _repo_url_to_gh(repo_url: str):
     Extract 'owner/repo' from any GitHub URL, git+https URL, or npm/pypi repo field.
     Returns None if not a GitHub URL.
     """
-    if not repo_url or repo_url in ("N/A", "â€”"):
+    if not repo_url or repo_url in ("N/A", "—"):
         return None
     url = repo_url.strip()
     # Handle git+https://github.com/... or git://github.com/...
@@ -3604,7 +3604,7 @@ def gh_repo_commits(repo_path: str, token=None):
             "message": commit.get("message","").split("\n")[0][:80],
             "sha":     c.get("sha","")[:7],
             "date":    (author.get("date","") or "")[:10],
-            "author":  gh_au.get("login","") or author.get("name","â€”"),
+            "author":  gh_au.get("login","") or author.get("name","—"),
             "url":     c.get("html_url",""),
         })
     last_commit_date = out[0]["date"] if out else None
@@ -3728,7 +3728,7 @@ def fetch_pkg_maintainers(pkg_name: str, registry: str) -> dict:
     return out
 
 
-# â”€â”€ Email domain classifier â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ── Email domain classifier ────────────────────────────────────────────────────
 _FREE_WEBMAIL = {
     "gmail.com","yahoo.com","hotmail.com","outlook.com","protonmail.com",
     "icloud.com","me.com","live.com","aol.com","ymail.com","mail.com",
@@ -3751,44 +3751,44 @@ def _classify_email(email: str) -> dict:
     """Classify a maintainer email by domain type and return a risk signal."""
     if not email or "@" not in email:
         return {"domain": None, "category": "unknown", "risk": "unknown",
-                "label": "â€”", "color": "#4a6580"}
+                "label": "—", "color": "#4a6580"}
     domain = email.split("@")[-1].lower().strip()
     if domain in _DISPOSABLE:
         return {"domain": domain, "category": "disposable", "risk": "high",
-                "label": "ðŸ”´ Disposable email", "color": "#ef4444"}
+                "label": "🔴 Disposable email", "color": "#ef4444"}
     if domain in _FREE_WEBMAIL:
         return {"domain": domain, "category": "personal", "risk": "medium",
-                "label": "ðŸŸ¡ Personal webmail", "color": "#f59e0b"}
+                "label": "🟡 Personal webmail", "color": "#f59e0b"}
     if domain in _TRUSTED_ORGS:
         return {"domain": domain, "category": "foundation", "risk": "low",
-                "label": "ðŸŸ¢ Foundation / Trusted org", "color": "#22c55e"}
+                "label": "🟢 Foundation / Trusted org", "color": "#22c55e"}
     return {"domain": domain, "category": "corporate", "risk": "low",
-            "label": "ðŸ”µ Custom / Corporate domain", "color": "#06b6d4"}
+            "label": "🔵 Custom / Corporate domain", "color": "#06b6d4"}
 
 
-# â”€â”€ Account age risk â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ── Account age risk ───────────────────────────────────────────────────────────
 def _account_age(created_at: str) -> dict:
     """Return age in days + risk badge from a GitHub created_at timestamp."""
     if not created_at:
-        return {"days": None, "label": "â€”", "risk": "unknown", "color": "#4a6580"}
+        return {"days": None, "label": "—", "risk": "unknown", "color": "#4a6580"}
     try:
         created = datetime.datetime.fromisoformat(created_at.replace("Z", "+00:00"))
         days    = (datetime.datetime.now(datetime.timezone.utc) - created).days
         yrs     = round(days / 365, 1)
         if days < 180:
-            return {"days": days, "label": f"ðŸ”´ {days}d (very new)", "risk": "high",   "color": "#ef4444"}
+            return {"days": days, "label": f"🔴 {days}d (very new)", "risk": "high",   "color": "#ef4444"}
         if days < 730:
-            return {"days": days, "label": f"ðŸŸ¡ {yrs}y old",          "risk": "medium", "color": "#f59e0b"}
-        return     {"days": days, "label": f"ðŸŸ¢ {yrs}y old",          "risk": "low",    "color": "#22c55e"}
+            return {"days": days, "label": f"🟡 {yrs}y old",          "risk": "medium", "color": "#f59e0b"}
+        return     {"days": days, "label": f"🟢 {yrs}y old",          "risk": "low",    "color": "#22c55e"}
     except Exception:
-        return {"days": None, "label": "â€”", "risk": "unknown", "color": "#4a6580"}
+        return {"days": None, "label": "—", "risk": "unknown", "color": "#4a6580"}
 
 
-# â”€â”€ npm 2FA check â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ── npm 2FA check ──────────────────────────────────────────────────────────────
 def _npm_2fa(username: str) -> str:
     """
     Returns 'enabled', 'disabled', or 'unknown'.
-    Uses the public npm profile endpoint â€” no auth required.
+    Uses the public npm profile endpoint — no auth required.
     """
     try:
         r = requests.get(
@@ -3806,7 +3806,7 @@ def _npm_2fa(username: str) -> str:
         return "unknown"
 
 
-# â”€â”€ OpenSSF Scorecard â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ── OpenSSF Scorecard ──────────────────────────────────────────────────────────
 def _openssf_scorecard(gh_path: str) -> dict | None:
     """
     Fetch OpenSSF Security Scorecard for a GitHub repo (no token needed).
@@ -3837,7 +3837,7 @@ def _openssf_scorecard(gh_path: str) -> dict | None:
         return None
 
 
-# â”€â”€ GitHub user public orgs â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ── GitHub user public orgs ────────────────────────────────────────────────────
 def _gh_user_orgs(login: str, token=None) -> list[str]:
     """Return list of public org logins the user belongs to."""
     data = _gh_get(f"https://api.github.com/users/{login}/orgs", token)
@@ -3846,7 +3846,7 @@ def _gh_user_orgs(login: str, token=None) -> list[str]:
     return []
 
 
-# â”€â”€ Last public activity â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ── Last public activity ───────────────────────────────────────────────────────
 def _gh_last_event(login: str, token=None) -> str:
     """Return date string of the user's most recent public GitHub event."""
     data = _gh_get(
@@ -3854,11 +3854,11 @@ def _gh_last_event(login: str, token=None) -> str:
         token)
     if isinstance(data, list) and data:
         ts = (data[0].get("created_at") or "")[:10]
-        return ts or "â€”"
-    return "â€”"
+        return ts or "—"
+    return "—"
 
 
-# â”€â”€ Commit signature rate â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ── Commit signature rate ──────────────────────────────────────────────────────
 def _commit_sig_rate(gh_path: str, login: str, token=None) -> dict:
     """
     Sample the author's last 10 commits to this repo and check GPG signing.
@@ -3869,7 +3869,7 @@ def _commit_sig_rate(gh_path: str, login: str, token=None) -> dict:
         f"?author={login}&per_page=10",
         token)
     if not isinstance(data, list) or not data:
-        return {"signed": 0, "total": 0, "label": "â€”"}
+        return {"signed": 0, "total": 0, "label": "—"}
     total  = len(data)
     signed = sum(
         1 for c in data
@@ -3877,17 +3877,17 @@ def _commit_sig_rate(gh_path: str, login: str, token=None) -> dict:
     )
     pct = int(signed / total * 100)
     if pct == 100:
-        label = f"ðŸŸ¢ 100% signed ({signed}/{total})"
+        label = f"🟢 100% signed ({signed}/{total})"
     elif pct >= 50:
-        label = f"ðŸŸ¡ {pct}% signed ({signed}/{total})"
+        label = f"🟡 {pct}% signed ({signed}/{total})"
     elif signed == 0:
-        label = f"ðŸ”´ 0% signed (0/{total})"
+        label = f"🔴 0% signed (0/{total})"
     else:
-        label = f"ðŸ”´ {pct}% signed ({signed}/{total})"
+        label = f"🔴 {pct}% signed ({signed}/{total})"
     return {"signed": signed, "total": total, "pct": pct, "label": label}
 
 
-# â”€â”€ Maintained packages count â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ── Maintained packages count ──────────────────────────────────────────────────
 def _npm_package_count(username: str) -> int | None:
     """Return number of npm packages the user owns/maintains."""
     try:
@@ -3901,16 +3901,16 @@ def _npm_package_count(username: str) -> int | None:
     return None
 
 
-# â”€â”€ Full contributor intelligence â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ── Full contributor intelligence ──────────────────────────────────────────────
 def gh_contributors_intel(gh_path: str, token=None, n: int = 5,
                            reg_name: str = "") -> list:
     """
     Deep security-researcher profile of a repo's top-n contributors.
 
     Per contributor fetches:
-      GitHub profile Â· social accounts (LinkedIn) Â· public orgs Â·
-      last event date Â· commit signature rate Â· npm 2FA Â· account age risk Â·
-      email domain classification Â· npm package count
+      GitHub profile · social accounts (LinkedIn) · public orgs ·
+      last event date · commit signature rate · npm 2FA · account age risk ·
+      email domain classification · npm package count
     """
     if not gh_path:
         return []
@@ -3921,7 +3921,7 @@ def gh_contributors_intel(gh_path: str, token=None, n: int = 5,
     if not raw or not isinstance(raw, list):
         return []
 
-    # Repo owner org â€” used to check if contributor is an official org member
+    # Repo owner org — used to check if contributor is an official org member
     repo_org = gh_path.split("/")[0].lower()
 
     result = []
@@ -3935,7 +3935,7 @@ def gh_contributors_intel(gh_path: str, token=None, n: int = 5,
         if not profile or not isinstance(profile, dict) or "_rate_limited" in profile:
             continue
 
-        # 2. Social accounts â†’ real LinkedIn / Twitter URL
+        # 2. Social accounts → real LinkedIn / Twitter URL
         socials  = _gh_get(f"https://api.github.com/users/{login}/social_accounts", token)
         linkedin = twitter = None
         if isinstance(socials, list):
@@ -3966,7 +3966,7 @@ def gh_contributors_intel(gh_path: str, token=None, n: int = 5,
         # 7. Commit signature rate for this repo
         sig_info = _commit_sig_rate(gh_path, login, token)
 
-        # 8. npm 2FA (always check â€” many devs publish on npm regardless of registry)
+        # 8. npm 2FA (always check — many devs publish on npm regardless of registry)
         npm_2fa_status = _npm_2fa(login)
 
         # 9. npm package count
@@ -4022,7 +4022,7 @@ def gh_repo_info(repo_path: str, token=None):
     d = _gh_get(f"https://api.github.com/repos/{repo_path}", token)
     return d if (d and "full_name" in d) else None
 
-# â”€â”€ Adapters â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ── Adapters ───────────────────────────────────────────────────────────────────
 
 class PyPIAdapter(BaseAdapter):
     @staticmethod
@@ -4030,10 +4030,10 @@ class PyPIAdapter(BaseAdapter):
         """
         Always return the PyPI package's own page as the Source link.
 
-        Why: when a user searches PyPI, they expect to land on PyPI â€” not on
+        Why: when a user searches PyPI, they expect to land on PyPI — not on
         whatever GitHub repo a maintainer happened to put in the Homepage field
         (which can be misleading, abandoned, or unrelated to the actual published
-        package). The PyPI page is the authoritative source â€” it shows the real
+        package). The PyPI page is the authoritative source — it shows the real
         version, maintainer, download stats, AND the GitHub link if available.
         """
         return f"https://pypi.org/project/{pkg_name}/"
@@ -4043,10 +4043,10 @@ class PyPIAdapter(BaseAdapter):
         """
         Extract the most authoritative license string from a PyPI package.
         Order of trust:
-          1. license_expression (PEP 639 SPDX â€” most modern, most accurate)
+          1. license_expression (PEP 639 SPDX — most modern, most accurate)
           2. license            (legacy free-text field)
-          3. classifiers â€” parse "License :: OSI Approved :: MIT License" etc.
-        Returns "â€”" only when no source contains any license signal.
+          3. classifiers — parse "License :: OSI Approved :: MIT License" etc.
+        Returns "—" only when no source contains any license signal.
         """
         # 1. PEP 639 SPDX expression (modern, accurate)
         le = (info.get("license_expression") or "").strip()
@@ -4084,7 +4084,7 @@ class PyPIAdapter(BaseAdapter):
             last_seg = c.split("::")[-1].strip()
             if last_seg and last_seg.lower() != "other/proprietary license":
                 return last_seg[:30]
-        return "â€”"
+        return "—"
 
     def fetch(self, pkg, **kw):
         r = requests.get(f"https://pypi.org/pypi/{pkg}/json", timeout=TIMEOUT)
@@ -4094,16 +4094,16 @@ class PyPIAdapter(BaseAdapter):
         v        = d.get("version", "N/A")
         # Last upload date for latest version
         releases = payload.get("releases", {})
-        last_updated = "â€”"
+        last_updated = "—"
         if v in releases and releases[v]:
-            last_updated = releases[v][-1].get("upload_time", "â€”")
+            last_updated = releases[v][-1].get("upload_time", "—")
         dl = 0
         try:
             rd = requests.get(
                 f"https://pypistats.org/api/packages/{pkg.lower()}/recent", timeout=5)
             if rd.status_code == 200: dl = rd.json().get("data",{}).get("last_month",0)
         except: pass
-        name = d.get("maintainer") or d.get("author") or "â€”"
+        name = d.get("maintainer") or d.get("author") or "—"
         m    = _m_auto(name)
         c    = check_vuln(pkg, "PyPI")
         # Extract the REAL GitHub org from project_urls for country lookup
@@ -4128,13 +4128,13 @@ class PyPIAdapter(BaseAdapter):
         d       = payload.get("info", {})
         v       = d.get("version", "N/A")
         releases = payload.get("releases", {})
-        last_updated = "â€”"
+        last_updated = "—"
         if v in releases and releases[v]:
-            last_updated = releases[v][-1].get("upload_time", "â€”")
-        name = d.get("maintainer") or d.get("author") or "â€”"
+            last_updated = releases[v][-1].get("upload_time", "—")
+        name = d.get("maintainer") or d.get("author") or "—"
         return [_row(slug, "PyPI", v, d.get("summary",""),
                      self._pypi_license(d), 0,
-                     _m_auto(name), "â€”",
+                     _m_auto(name), "—",
                      self._pypi_source_url(d, slug),
                      last_updated=last_updated)]
 
@@ -4155,11 +4155,11 @@ class NPMAdapter(BaseAdapter):
             first = (mlist[0].get("name","") if isinstance(mlist[0], dict)
                      else str(mlist[0]))
             if len(mlist) > 1:
-                return f"User Â· {first} +{len(mlist)-1}"
+                return f"User · {first} +{len(mlist)-1}"
             return _m_user(first)
         if aname:
             return _m_user(aname)
-        return "â€”"
+        return "—"
 
     def fetch(self, pkg, **kw):
         r = requests.get(f"https://registry.npmjs.org/{pkg}", timeout=TIMEOUT)
@@ -4169,7 +4169,7 @@ class NPMAdapter(BaseAdapter):
         repo = d.get("repository",{})
         # Last modified from npm time map
         time_map     = d.get("time", {})
-        last_updated = time_map.get("modified","") or time_map.get(v,"") or "â€”"
+        last_updated = time_map.get("modified","") or time_map.get(v,"") or "—"
         dl = 0
         try:
             rd = requests.get(
@@ -4177,13 +4177,13 @@ class NPMAdapter(BaseAdapter):
             if rd.status_code == 200: dl = rd.json().get("downloads",0)
         except: pass
 
-        # â”€â”€ .js suffix accuracy fix â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        # ── .js suffix accuracy fix ──────────────────────────────────────────
         # "next.js" on npm is a tiny v1 package; the real framework is "next".
-        # "vue.js" â†’ "vue", "express.js" â†’ "express", etc.
+        # "vue.js" → "vue", "express.js" → "express", etc.
         # If query ends with ".js" also probe the bare name and prefer it when
-        # it has significantly more downloads (5Ã— threshold).
+        # it has significantly more downloads (5× threshold).
         if pkg.lower().endswith(".js") and len(pkg) > 3:
-            base = pkg[:-3]                     # "next.js" â†’ "next"
+            base = pkg[:-3]                     # "next.js" → "next"
             try:
                 r2 = requests.get(f"https://registry.npmjs.org/{base}", timeout=TIMEOUT)
                 if r2.status_code == 200:
@@ -4200,7 +4200,7 @@ class NPMAdapter(BaseAdapter):
                         v2   = d2.get("dist-tags", {}).get("latest", "N/A")
                         repo2 = d2.get("repository", {})
                         tm2  = d2.get("time", {})
-                        lu2  = tm2.get("modified", "") or tm2.get(v2, "") or "â€”"
+                        lu2  = tm2.get("modified", "") or tm2.get(v2, "") or "—"
                         m2   = self._npm_maintainer(base, d2)
                         c2   = check_vuln(base, "npm")
                         return _row(
@@ -4211,13 +4211,13 @@ class NPMAdapter(BaseAdapter):
                             last_updated=lu2)
             except Exception:
                 pass
-        # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        # ────────────────────────────────────────────────────────────────────
 
         m = self._npm_maintainer(pkg, d)
         c = check_vuln(pkg,"npm")
-        # Source button â†’ always the npm page for this package.
-        # Country lookup â†’ use the REAL GitHub org from the repo URL,
-        # not the npm publish-account name (e.g. "fb" â†’ "facebook").
+        # Source button → always the npm page for this package.
+        # Country lookup → use the REAL GitHub org from the repo URL,
+        # not the npm publish-account name (e.g. "fb" → "facebook").
         return _row(pkg, "NPM", v, d.get("description",""), d.get("license",""),
                     dl, m, c,
                     f"https://www.npmjs.com/package/{pkg}",
@@ -4241,17 +4241,17 @@ class NPMAdapter(BaseAdapter):
             elif mlist:
                 first = (mlist[0].get("username","") or mlist[0].get("name","")
                          if isinstance(mlist[0], dict) else str(mlist[0]))
-                m = (f"User Â· {first} +{len(mlist)-1}" if len(mlist) > 1
+                m = (f"User · {first} +{len(mlist)-1}" if len(mlist) > 1
                      else _m_user(first))
             elif aname:
                 m = _m_user(aname)
             else:
-                m = "â€”"
+                m = "—"
             last_updated = (obj.get("package",{}).get("date","") or
-                            p.get("date","") or "â€”")
+                            p.get("date","") or "—")
             out.append(_row(name, "NPM", p.get("version","N/A"),
                             p.get("description",""), p.get("license",""), 0,
-                            m, "â€”", p.get("links",{}).get("npm","N/A"),
+                            m, "—", p.get("links",{}).get("npm","N/A"),
                             last_updated=last_updated))
         return out
 
@@ -4262,17 +4262,17 @@ class RubyGemsAdapter(BaseAdapter):
             f"https://rubygems.org/api/v1/gems/{pkg.lower()}.json", timeout=TIMEOUT)
         if r.status_code != 200: return None
         d    = r.json()
-        authors = d.get("authors","â€”") or "â€”"
+        authors = d.get("authors","—") or "—"
         m    = _m_auto(authors)
         c    = check_vuln(pkg.lower(),"RubyGems")
-        last_updated = d.get("version_created_at","") or d.get("created_at","") or "â€”"
-        # Country lookup â†’ real GitHub org from source_code_uri / homepage
+        last_updated = d.get("version_created_at","") or d.get("created_at","") or "—"
+        # Country lookup → real GitHub org from source_code_uri / homepage
         _gh = (_gh_owner_from_url(d.get("source_code_uri","")) or
                _gh_owner_from_url(d.get("homepage_uri","")))
-        # Source button â†’ always the RubyGems page for this gem
+        # Source button → always the RubyGems page for this gem
         return _row(pkg.lower(), "RubyGems", d.get("version","N/A"),
                     d.get("info",""),
-                    ", ".join(d.get("licenses") or []) if d.get("licenses") else "â€”",
+                    ", ".join(d.get("licenses") or []) if d.get("licenses") else "—",
                     d.get("downloads",0), m, c,
                     f"https://rubygems.org/gems/{pkg.lower()}",
                     last_updated=last_updated,
@@ -4285,11 +4285,11 @@ class RubyGemsAdapter(BaseAdapter):
         if r.status_code != 200: return []
         return [_row(g.get("name","?"), "RubyGems", g.get("version","N/A"),
                      g.get("info",""),
-                     ", ".join(g.get("licenses") or []) if g.get("licenses") else "â€”",
+                     ", ".join(g.get("licenses") or []) if g.get("licenses") else "—",
                      g.get("downloads",0),
-                     _m_auto(g.get("authors","â€”")), "â€”",
+                     _m_auto(g.get("authors","—")), "—",
                      f"https://rubygems.org/gems/{g.get('name','')}",
-                     last_updated=g.get("version_created_at","") or "â€”")
+                     last_updated=g.get("version_created_at","") or "—")
                 for g in r.json()[:SEARCH_LIMIT]]
 
 
@@ -4304,7 +4304,7 @@ class CratesAdapter(BaseAdapter):
 
         # crates.io quirk: when every published version has been yanked, the API
         # reports max_version="0.0.0" as a placeholder. The real latest version
-        # still lives in `versions[]` â€” surface it with a "(yanked)" suffix so
+        # still lives in `versions[]` — surface it with a "(yanked)" suffix so
         # the user knows what the package actually contains.
         v = cr.get("max_stable_version") or cr.get("max_version", "N/A")
         if v in ("0.0.0", None, "N/A") and versions:
@@ -4312,14 +4312,14 @@ class CratesAdapter(BaseAdapter):
             yanked      = versions[0].get("yanked", False)
             v = f"{real_latest} (yanked)" if yanked else real_latest
 
-        lic      = versions[0].get("license","â€”") if versions else "â€”"
+        lic      = versions[0].get("license","—") if versions else "—"
         # Try owner endpoint for maintainer info
-        m = "â€”"
+        m = "—"
         try:
             ou = requests.get(f"https://crates.io/api/v1/crates/{pkg}/owner_team",
                               headers={"User-Agent":"RegistryIntel/2.0"}, timeout=4)
             if ou.status_code == 200 and ou.json().get("teams"):
-                tname = ou.json()["teams"][0].get("name","â€”")
+                tname = ou.json()["teams"][0].get("name","—")
                 m = _m_org(tname)
             else:
                 uu = requests.get(f"https://crates.io/api/v1/crates/{pkg}/owner_user",
@@ -4327,16 +4327,16 @@ class CratesAdapter(BaseAdapter):
                 if uu.status_code == 200:
                     users = uu.json().get("users",[])
                     if len(users) > 1:
-                        m = f"Org Â· {users[0].get('login','â€”')} +{len(users)-1}"
+                        m = f"Org · {users[0].get('login','—')} +{len(users)-1}"
                     elif users:
-                        m = _m_user(users[0].get("login","â€”"))
+                        m = _m_user(users[0].get("login","—"))
         except: pass
         c            = check_vuln(pkg,"crates.io")
-        last_updated = cr.get("updated_at","") or "â€”"
-        # Country lookup â†’ real GitHub org from repository / homepage
+        last_updated = cr.get("updated_at","") or "—"
+        # Country lookup → real GitHub org from repository / homepage
         _gh = (_gh_owner_from_url(cr.get("repository","")) or
                _gh_owner_from_url(cr.get("homepage","")))
-        # Source button â†’ always the crates.io page for this crate
+        # Source button → always the crates.io page for this crate
         return _row(pkg, "Crates.io", v,
                     cr.get("description",""), lic,
                     cr.get("downloads",0), m, c,
@@ -4351,11 +4351,11 @@ class CratesAdapter(BaseAdapter):
         if r.status_code != 200: return []
         return [_row(c.get("name","?"), "Crates.io",
                      c.get("max_stable_version") or c.get("max_version","N/A"),
-                     c.get("description",""), "â€”",
-                     c.get("downloads",0), "â€”", "â€”",
+                     c.get("description",""), "—",
+                     c.get("downloads",0), "—", "—",
                      (c.get("repository") or c.get("homepage") or
                       f"https://crates.io/crates/{c.get('name','')}"),
-                     last_updated=c.get("updated_at","") or "â€”")
+                     last_updated=c.get("updated_at","") or "—")
                 for c in r.json().get("crates",[])]
 
 
@@ -4375,25 +4375,25 @@ class PackagistAdapter(BaseAdapter):
         stables = [v for v in all_ver if "dev-" not in v.lower()]
         v       = stables[0] if stables else "N/A"
         dl      = pk.get("downloads",{}).get("total",0) if isinstance(pk.get("downloads"),dict) else 0
-        raw_lic = pk.get("license","â€”")
-        lic     = ", ".join(raw_lic) if isinstance(raw_lic,list) else str(raw_lic or "â€”")
+        raw_lic = pk.get("license","—")
+        lic     = ", ".join(raw_lic) if isinstance(raw_lic,list) else str(raw_lic or "—")
         mlist   = pk.get("maintainers",[])
         vendor  = full.split("/")[0]
         if len(mlist) > 1:
-            m = f"Org Â· {vendor}"
+            m = f"Org · {vendor}"
         elif mlist:
             m = _m_user(mlist[0].get("name", vendor))
         else:
             m = _m_org(vendor)
         # Last release date
-        last_updated = "â€”"
+        last_updated = "—"
         if stables and stables[0] in all_ver:
-            last_updated = all_ver[stables[0]].get("time","") or "â€”"
+            last_updated = all_ver[stables[0]].get("time","") or "—"
         c = check_vuln(full,"Packagist")
-        # Country lookup â†’ real GitHub org from repository URL
+        # Country lookup → real GitHub org from repository URL
         _gh = _gh_owner_from_url(pk.get("repository",""))
         # Library shows just the package name (clean). Vendor stays in Maintainer.
-        # Source button â†’ always the Packagist page for this package
+        # Source button → always the Packagist page for this package
         pkg_name = full.split("/")[-1] if "/" in full else full
         return _row(pkg_name, "Packagist", v,
                     pk.get("description",""), lic, dl, m, c,
@@ -4407,10 +4407,10 @@ class PackagistAdapter(BaseAdapter):
             timeout=TIMEOUT)
         if r.status_code != 200: return []
         return [_row(p.get("name","?").split("/")[-1], "Packagist", "N/A",
-                     p.get("description",""), "â€”", 0,
-                     _m_org(p.get("name","?").split("/")[0]), "â€”",
+                     p.get("description",""), "—", 0,
+                     _m_org(p.get("name","?").split("/")[0]), "—",
                      f"https://packagist.org/packages/{p.get('name','')}",
-                     last_updated="â€”")
+                     last_updated="—")
                 for p in r.json().get("results",[])]
 
 
@@ -4447,13 +4447,13 @@ class MavenAdapter(BaseAdapter):
     def _maven_text_search(pkg):
         """
         Free-text Maven search fallback used when exact Solr queries return nothing.
-        Covers cases like "springboot" (no exact artifact) â†’ Maven's relevance
+        Covers cases like "springboot" (no exact artifact) → Maven's relevance
         ranking surfaces org.springframework.boot:spring-boot-starter as the top hit.
-        Also tries the hyphenated variant (springboot â†’ spring-boot) so that
+        Also tries the hyphenated variant (springboot → spring-boot) so that
         Maven's indexed text matches compound artifact IDs.
         """
         variants = [pkg]
-        # Build a hyphenated guess by inserting a dash at every lowercaseâ†’lowercase
+        # Build a hyphenated guess by inserting a dash at every lowercase→lowercase
         # run boundary that looks like a compound word (simple best-effort).
         import re as _re
         hyph = _re.sub(r'([a-z])([A-Z])', r'\1-\2', pkg).lower()
@@ -4480,7 +4480,7 @@ class MavenAdapter(BaseAdapter):
                 docs = r.json().get("response", {}).get("docs", [])
                 if not docs:
                     continue
-                # â”€â”€ Relevance filter â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+                # ── Relevance filter ─────────────────────────────────────────
                 # Only keep docs whose artifactId is a close match to the query
                 # so that e.g. "kotlin-styled-next-js" never surfaces for "nextjs".
                 def _art_norm(d):
@@ -4492,7 +4492,7 @@ class MavenAdapter(BaseAdapter):
                     relevant = [d for d in docs if pkg_norm in _art_norm(d)]
                 if not relevant:
                     # Last resort: only accept if the query name appears somewhere
-                    # in the artifactId or groupId â€” never return a totally unrelated hit.
+                    # in the artifactId or groupId — never return a totally unrelated hit.
                     relevant = [d for d in docs
                                 if _name_match(pkg, d.get("a","")) or
                                    _name_match(pkg, d.get("g",""))]
@@ -4507,19 +4507,19 @@ class MavenAdapter(BaseAdapter):
     def fetch(self, pkg, **kw):
         if ":" in pkg:
             g_id, a_id = pkg.split(":", 1)
-            # Single precise query â€” user supplied full coordinates
+            # Single precise query — user supplied full coordinates
             queries     = [f"g:{g_id}+AND+a:{a_id}"]
             artifact_id = a_id
         else:
             # Plain name (e.g. "junit", "log4j", "guava", "springboot")
-            # Strategy 1: g:name AND a:name  â†’ catches junit:junit, log4j:log4j
-            # Strategy 2: a:name             â†’ catches any group with that artifactId
+            # Strategy 1: g:name AND a:name  → catches junit:junit, log4j:log4j
+            # Strategy 2: a:name             → catches any group with that artifactId
             queries     = [f"g:{pkg}+AND+a:{pkg}", f"a:{pkg}"]
             artifact_id = pkg
 
         d = self._maven_find(queries, artifact_id)
 
-        # Strategy 3 (fallback): free-text search â€” handles "springboot" â†’ spring-boot-starter
+        # Strategy 3 (fallback): free-text search — handles "springboot" → spring-boot-starter
         if not d and ":" not in pkg:
             d = self._maven_text_search(pkg)
 
@@ -4531,19 +4531,19 @@ class MavenAdapter(BaseAdapter):
         a_id = d.get("a", "")
         m    = _m_org(g)
         c    = check_vuln(full, "Maven")
-        desc = f"{g}  Â·  {a_id}"
+        desc = f"{g}  ·  {a_id}"
         ts   = d.get("timestamp", 0)
         last_updated = (datetime.datetime.utcfromtimestamp(ts / 1000).strftime("%Y-%m-%d")
-                        if ts else "â€”")
+                        if ts else "—")
 
         # The Solr Search API's `latestVersion` AND `timestamp` are GENUINELY
-        # STALE â€” Solr doesn't re-index when new versions are released. The
+        # STALE — Solr doesn't re-index when new versions are released. The
         # authoritative source is Maven Central's own maven-metadata.xml file,
         # which always reflects the actual repo state.
-        # e.g. com.google.guava:guava â†’ Solr says 33.4.8-jre (Apr 2025),
+        # e.g. com.google.guava:guava → Solr says 33.4.8-jre (Apr 2025),
         #      metadata.xml says 33.6.0-jre with lastUpdated of today
         latest_ver = d.get("latestVersion", "N/A")
-        gh_owner   = ""   # for country lookup â€” extracted from POM <scm>
+        gh_owner   = ""   # for country lookup — extracted from POM <scm>
         try:
             g_path = g.replace(".", "/")
             meta_r = requests.get(
@@ -4559,7 +4559,7 @@ class MavenAdapter(BaseAdapter):
                     latest_ver = m_rel.group(1).strip()
                 elif m_lat:
                     latest_ver = m_lat.group(1).strip()
-                # <lastUpdated>20260515111108</lastUpdated>  â†’ YYYY-MM-DD
+                # <lastUpdated>20260515111108</lastUpdated>  → YYYY-MM-DD
                 m_upd = re.search(r"<lastUpdated>(\d{8})\d*</lastUpdated>", txt)
                 if m_upd:
                     raw = m_upd.group(1)
@@ -4567,9 +4567,9 @@ class MavenAdapter(BaseAdapter):
         except Exception:
             pass
 
-        # Fetch the POM file â€” it contains <scm><url> pointing to the upstream
+        # Fetch the POM file — it contains <scm><url> pointing to the upstream
         # GitHub repo. For wrapper packages like org.webjars.npm:react this
-        # gives us the REAL upstream (facebook/react â†’ USA), not the wrapper org.
+        # gives us the REAL upstream (facebook/react → USA), not the wrapper org.
         try:
             g_path = g.replace(".", "/")
             pom_r = requests.get(
@@ -4595,8 +4595,8 @@ class MavenAdapter(BaseAdapter):
         except Exception:
             pass
 
-        # Library column shows just the artifact name (clean) â€” full coordinates
-        # are still preserved in Maintainer ("Org Â· {g}") and Description ("{g} Â· {a}")
+        # Library column shows just the artifact name (clean) — full coordinates
+        # are still preserved in Maintainer ("Org · {g}") and Description ("{g} · {a}")
         return _row(a_id, "Maven Central", latest_ver,
                     desc, "Apache-2.0", 0, m, c,
                     f"https://mvnrepository.com/artifact/{g}/{a_id}",
@@ -4612,11 +4612,11 @@ class MavenAdapter(BaseAdapter):
         for d in r.json().get("response",{}).get("docs",[]):
             ts   = d.get("timestamp", 0)
             lud  = (datetime.datetime.utcfromtimestamp(ts/1000).strftime("%Y-%m-%d")
-                    if ts else "â€”")
+                    if ts else "—")
             out.append(_row(d.get("a","?"), "Maven Central",
                             d.get("latestVersion","N/A"),
-                            f"{d.get('g','')}  Â·  {d.get('a','')}", "Apache-2.0", 0,
-                            _m_org(d.get("g","")), "â€”",
+                            f"{d.get('g','')}  ·  {d.get('a','')}", "Apache-2.0", 0,
+                            _m_org(d.get("g","")), "—",
                             f"https://mvnrepository.com/artifact/{d.get('g')}/{d.get('a')}",
                             last_updated=lud))
         return out
@@ -4627,7 +4627,7 @@ class NuGetAdapter(BaseAdapter):
     def _nuget_published_date(pid: str, version: str) -> str:
         """
         NuGet's search API (`azuresearch-usnc.nuget.org/query`) does NOT return
-        a `published` date â€” it's always null. The authoritative source is the
+        a `published` date — it's always null. The authoritative source is the
         Registration API which has `published` per catalog entry.
 
         Endpoint: https://api.nuget.org/v3/registration5-semver1/{id_lower}/index.json
@@ -4639,7 +4639,7 @@ class NuGetAdapter(BaseAdapter):
                 f"{pid.lower()}/index.json",
                 timeout=8)
             if r.status_code != 200:
-                return "â€”"
+                return "—"
             pages = r.json().get("items", []) or []
             # The last page contains the newest version
             for page in reversed(pages):
@@ -4653,12 +4653,12 @@ class NuGetAdapter(BaseAdapter):
                 for entry in reversed(inner):
                     ce = entry.get("catalogEntry", {}) or {}
                     if ce.get("version") == version:
-                        return (ce.get("published") or "â€”")
+                        return (ce.get("published") or "—")
                 if inner:
-                    return (inner[-1].get("catalogEntry", {}).get("published") or "â€”")
+                    return (inner[-1].get("catalogEntry", {}).get("published") or "—")
         except Exception:
             pass
-        return "â€”"
+        return "—"
 
     def fetch(self, pkg, **kw):
         r = requests.get(
@@ -4671,27 +4671,27 @@ class NuGetAdapter(BaseAdapter):
         authors  = d.get("authors",[]) or []
         if isinstance(authors, list):
             if len(authors) > 1:
-                m = f"Org Â· {authors[0]} +{len(authors)-1}"
+                m = f"Org · {authors[0]} +{len(authors)-1}"
             elif authors:
                 m = _m_auto(authors[0])
             else:
-                m = "â€”"
+                m = "—"
         else:
             m = _m_auto(str(authors))
         # License extraction:
-        # 1. licenseExpression (SPDX) â€” newest NuGet format, most accurate
-        # 2. licenseUrl â€” older URL-based; _lic() now parses common patterns
-        # 3. GitHub fallback â€” if NuGet has projectUrl pointing to GitHub,
+        # 1. licenseExpression (SPDX) — newest NuGet format, most accurate
+        # 2. licenseUrl — older URL-based; _lic() now parses common patterns
+        # 3. GitHub fallback — if NuGet has projectUrl pointing to GitHub,
         #    fetch the repo's authoritative SPDX license from the GitHub API
-        lic_raw = d.get("licenseExpression","") or d.get("licenseUrl","") or "â€”"
+        lic_raw = d.get("licenseExpression","") or d.get("licenseUrl","") or "—"
         lic     = _lic(lic_raw)
         c       = check_vuln(d.get("id",pkg),"NuGet")
         pid     = d.get("id", pkg)
         ver     = d.get("version", "N/A")
-        # Country lookup â†’ real GitHub org from projectUrl
+        # Country lookup → real GitHub org from projectUrl
         _gh = _gh_owner_from_url(d.get("projectUrl",""))
         # GitHub license fallback when NuGet's data is mangled / missing
-        if lic in ("â€”", "") and _gh:
+        if lic in ("—", "") and _gh:
             try:
                 _repo_part = (d.get("projectUrl","") or "").rstrip("/").split("/")[-1]
                 _glr = requests.get(
@@ -4705,9 +4705,9 @@ class NuGetAdapter(BaseAdapter):
                         lic = _glic
             except Exception:
                 pass
-        # Search API returns published=null â€” use the Registration API instead
+        # Search API returns published=null — use the Registration API instead
         last_updated = d.get("published") or self._nuget_published_date(pid, ver)
-        # Source button â†’ always the NuGet page for this package
+        # Source button → always the NuGet page for this package
         return _row(pid, "NuGet", d.get("version","N/A"),
                     d.get("description",""), lic,
                     d.get("totalDownloads",0), m, c,
@@ -4721,8 +4721,8 @@ class NuGetAdapter(BaseAdapter):
             timeout=TIMEOUT)
         if r.status_code != 200: return []
         return [_row(d.get("id","?"), "NuGet", d.get("version","N/A"),
-                     d.get("description",""), "â€”",
-                     d.get("totalDownloads",0), "â€”", "â€”",
+                     d.get("description",""), "—",
+                     d.get("totalDownloads",0), "—", "—",
                      f"https://www.nuget.org/packages/{d.get('id','')}",
                      last_updated=(d.get("published")
                                    or self._nuget_published_date(
@@ -4738,8 +4738,8 @@ class GoModulesAdapter(BaseAdapter):
         if r.status_code != 200: return None
         proxy_data   = r.json()
         v            = proxy_data.get("Version","N/A")
-        last_updated = proxy_data.get("Time","") or "â€”"
-        lic = "â€”"
+        last_updated = proxy_data.get("Time","") or "—"
+        lic = "—"
         try:
             enc     = requests.utils.quote(pkg, safe="")
             ver_enc = requests.utils.quote(v, safe="")
@@ -4748,16 +4748,16 @@ class GoModulesAdapter(BaseAdapter):
                 timeout=5)
             if dr.status_code == 200:
                 lics = dr.json().get("licenses",[])
-                lic  = ", ".join(lics) if lics else "â€”"
+                lic  = ", ".join(lics) if lics else "—"
         except: pass
         parts = pkg.split("/")
-        owner = parts[1] if len(parts) >= 2 else "â€”"
+        owner = parts[1] if len(parts) >= 2 else "—"
         m     = _m_user(owner)
         c     = check_vuln(pkg,"Go")
         # For Go modules with path "github.com/owner/repo", owner is the real
-        # GitHub org â†’ ideal for country lookup
+        # GitHub org → ideal for country lookup
         _gh = owner if (len(parts) >= 3 and parts[0].lower() == "github.com") else ""
-        return _row(pkg, "Go Modules", v, "â€”", lic, 0, m, c,
+        return _row(pkg, "Go Modules", v, "—", lic, 0, m, c,
                     f"https://pkg.go.dev/{pkg}",
                     last_updated=last_updated,
                     gh_owner=_gh)
@@ -4794,10 +4794,10 @@ class HomebrewAdapter(BaseAdapter):
                     if commits:
                         return ((commits[0].get("commit") or {})
                                 .get("committer", {})
-                                .get("date", "") or "â€”")
+                                .get("date", "") or "—")
             except Exception:
                 continue
-        return "â€”"
+        return "—"
 
     def fetch(self, pkg, **kw):
         name = pkg.lower()
@@ -4807,12 +4807,12 @@ class HomebrewAdapter(BaseAdapter):
             if r.status_code == 200:
                 d = r.json()
                 v = (d.get("versions") or {}).get("stable") or d.get("version","N/A")
-                # Last updated â†’ last commit touching the formula file on GitHub
+                # Last updated → last commit touching the formula file on GitHub
                 lu = self._formula_last_commit(kind, name, kw.get("token"))
-                # Source button â†’ always the Homebrew formulae page
+                # Source button → always the Homebrew formulae page
                 return _row(name, "Homebrew", v,
-                            d.get("desc",""), "â€”", 0,
-                            "Community Â· Homebrew", "â€”",
+                            d.get("desc",""), "—", 0,
+                            "Community · Homebrew", "—",
                             f"https://formulae.brew.sh/{kind}/{name}",
                             last_updated=lu)
         return None
@@ -4830,17 +4830,17 @@ class DockerHubAdapter(BaseAdapter):
         tag_count = d.get("tag_count",0)
         ver_label = f"{tag_count} tags" if tag_count else "see tags"
         if d.get("is_official"):
-            m = "Org Â· Docker Official"
+            m = "Org · Docker Official"
         elif ns == "library":
-            m = "Org Â· Docker"
+            m = "Org · Docker"
         else:
             m = _m_org(ns)
-        last_updated = d.get("last_updated","") or "â€”"
+        last_updated = d.get("last_updated","") or "—"
         # Docker Hub namespace often matches GitHub org (nginx, redis, mysql)
         # Library shows just the image name; namespace stays in Maintainer
         return _row(nm, "Docker Hub", ver_label,
                     _trunc(d.get("full_description") or d.get("description",""),72),
-                    "â€”", d.get("pull_count",0), m, "â€”",
+                    "—", d.get("pull_count",0), m, "—",
                     f"https://hub.docker.com/r/{ns}/{nm}",
                     last_updated=last_updated,
                     gh_owner=ns if ns != "library" else nm)
@@ -4854,12 +4854,12 @@ class DockerHubAdapter(BaseAdapter):
         for res in r.json().get("results",[]):
             ow = res.get("repo_owner") or "library"
             nm = res.get("repo_name","?")
-            m  = "Org Â· Docker Official" if res.get("is_official") else _m_org(ow)
+            m  = "Org · Docker Official" if res.get("is_official") else _m_org(ow)
             out.append(_row(nm, "Docker Hub", "see tags",
                             _trunc(res.get("short_description",""),72),
-                            "â€”", res.get("pull_count",0), m, "â€”",
+                            "—", res.get("pull_count",0), m, "—",
                             f"https://hub.docker.com/r/{ow}/{nm}",
-                            last_updated=res.get("last_updated","") or "â€”"))
+                            last_updated=res.get("last_updated","") or "—"))
         return out
 
 
@@ -4873,14 +4873,14 @@ class HuggingFaceAdapter(BaseAdapter):
             desc     = card.get("description","") or (
                        f"Task: {pipeline}" if pipeline else
                        " | ".join(d.get("tags",[])[:3]))
-            lic      = card.get("license","â€”") or "â€”"
+            lic      = card.get("license","—") or "—"
             author   = d.get("author","") or mid.split("/")[0]
             m        = _m_org(author) if "/" in mid else _m_user(author)
-            lm       = d.get("lastModified","") or "â€”"
+            lm       = d.get("lastModified","") or "—"
             model_name = mid.split("/")[-1] if "/" in mid else mid
             # HF org name often matches a GitHub org (microsoft, google, openai)
             return _row(model_name, "Hugging Face", lm[:10],
-                        desc, lic, d.get("downloads",0), m, "â€”",
+                        desc, lic, d.get("downloads",0), m, "—",
                         f"https://huggingface.co/{mid}",
                         last_updated=lm,
                         gh_owner=author)
@@ -4896,10 +4896,10 @@ class HuggingFaceAdapter(BaseAdapter):
                 desc     = f"Task: {pipeline}" if pipeline else " | ".join(d.get("tags",[])[:3])
                 author   = d.get("author","") or mid.split("/")[0]
                 m        = _m_org(author) if "/" in mid else _m_user(author)
-                lm       = d.get("lastModified","") or "â€”"
+                lm       = d.get("lastModified","") or "—"
                 model_name = mid.split("/")[-1] if "/" in mid else mid
                 return _row(model_name, "Hugging Face", lm[:10],
-                            desc, "â€”", d.get("downloads",0), m, "â€”",
+                            desc, "—", d.get("downloads",0), m, "—",
                             f"https://huggingface.co/{mid}",
                             last_updated=lm,
                             gh_owner=author)
@@ -4917,10 +4917,10 @@ class HuggingFaceAdapter(BaseAdapter):
             mid      = d.get("id","?")
             author   = d.get("author","") or (mid.split("/")[0] if "/" in mid else "")
             m        = _m_org(author) if "/" in mid else _m_user(author)
-            lm       = d.get("lastModified","") or "â€”"
+            lm       = d.get("lastModified","") or "—"
             model_name = mid.split("/")[-1] if "/" in mid else mid
             rows.append(_row(model_name, "Hugging Face", lm[:10],
-                             desc, "â€”", d.get("downloads",0), m, "â€”",
+                             desc, "—", d.get("downloads",0), m, "—",
                              f"https://huggingface.co/{mid}",
                              last_updated=lm))
         return rows
@@ -4934,17 +4934,17 @@ class WordPressAdapter(BaseAdapter):
         if r.status_code != 200: return None
         d = r.json()
         if not isinstance(d,dict) or "error" in d: return None
-        author = d.get("author","â€”")
+        author = d.get("author","—")
         # Strip HTML tags from author field
         import re
         author = re.sub(r"<[^>]+>","",author).strip()
-        # Source button â†’ always the WordPress.org plugin page
+        # Source button → always the WordPress.org plugin page
         return _row(pkg.lower(), "WordPress Plugins", d.get("version","N/A"),
                     d.get("short_description",""), "GPL-2.0",
                     d.get("active_installs",0),
-                    _m_user(author), "â€”",
+                    _m_user(author), "—",
                     f"https://wordpress.org/plugins/{pkg.lower()}/",
-                    last_updated=d.get("last_updated","") or "â€”")
+                    last_updated=d.get("last_updated","") or "—")
 
     def search(self, q, **kw):
         r = requests.get(
@@ -4956,10 +4956,10 @@ class WordPressAdapter(BaseAdapter):
         return [_row(p.get("slug","?"), "WordPress Plugins", p.get("version","N/A"),
                      p.get("short_description",""), "GPL-2.0",
                      p.get("active_installs",0),
-                     _m_user(re.sub(r"<[^>]+>","",p.get("author","â€”")).strip()),
-                     "â€”",
+                     _m_user(re.sub(r"<[^>]+>","",p.get("author","—")).strip()),
+                     "—",
                      f"https://wordpress.org/plugins/{p.get('slug','')}/",
-                     last_updated=p.get("last_updated","") or "â€”")
+                     last_updated=p.get("last_updated","") or "—")
                 for p in r.json().get("plugins",[])]
 
 
@@ -4972,13 +4972,13 @@ class TerraformAdapter(BaseAdapter):
         if not mods: return None
         mo = mods[0]
         if not _exact_match(pkg, mo.get("name","")): return None
-        # ID format: namespace/name/provider â€” show just the module name in Library
-        namespace = mo.get("id","").split("/")[0] if "/" in mo.get("id","") else "â€”"
+        # ID format: namespace/name/provider — show just the module name in Library
+        namespace = mo.get("id","").split("/")[0] if "/" in mo.get("id","") else "—"
         return _row(mo.get("name", pkg), "Terraform Registry", mo.get("version","N/A"),
-                    mo.get("description","â€”"), "MPL-2.0",
-                    mo.get("downloads",0), _m_org(namespace), "â€”",
+                    mo.get("description","—"), "MPL-2.0",
+                    mo.get("downloads",0), _m_org(namespace), "—",
                     f"https://registry.terraform.io/modules/{mo.get('id','')}",
-                    last_updated=mo.get("published_at","") or "â€”",
+                    last_updated=mo.get("published_at","") or "—",
                     gh_owner=namespace)
 
     def search(self, q, **kw):
@@ -4987,12 +4987,12 @@ class TerraformAdapter(BaseAdapter):
             timeout=TIMEOUT)
         if r.status_code != 200: return []
         return [_row(mo.get("name","?"), "Terraform Registry", mo.get("version","N/A"),
-                     mo.get("description","â€”"), "MPL-2.0",
+                     mo.get("description","—"), "MPL-2.0",
                      mo.get("downloads",0),
-                     _m_org(mo.get("id","?").split("/")[0] if "/" in mo.get("id","?") else "â€”"),
-                     "â€”",
+                     _m_org(mo.get("id","?").split("/")[0] if "/" in mo.get("id","?") else "—"),
+                     "—",
                      f"https://registry.terraform.io/modules/{mo.get('id','')}",
-                     last_updated=mo.get("published_at","") or "â€”")
+                     last_updated=mo.get("published_at","") or "—")
                 for mo in r.json().get("modules",[])]
 
 
@@ -5007,15 +5007,15 @@ class AnsibleGalaxyAdapter(BaseAdapter):
         if not res: return None
         d  = res[0]
         if not _exact_match(pkg, d.get("name","")): return None
-        ns = (d.get("summary_fields") or {}).get("namespace",{}).get("name","â€”")
+        ns = (d.get("summary_fields") or {}).get("namespace",{}).get("name","—")
         # Library shows just the role name; namespace stays in Maintainer
-        # Source button â†’ always the Ansible Galaxy page
+        # Source button → always the Ansible Galaxy page
         return _row(d.get("name", pkg), "Ansible Galaxy",
-                    d.get("version","N/A"), d.get("description",""), "â€”",
+                    d.get("version","N/A"), d.get("description",""), "—",
                     d.get("download_count",0),
-                    _m_user(ns), "â€”",
+                    _m_user(ns), "—",
                     f"https://galaxy.ansible.com/{ns}/{d.get('name','')}",
-                    last_updated=d.get("modified","") or "â€”",
+                    last_updated=d.get("modified","") or "—",
                     gh_owner=ns)
 
     def search(self, q, **kw):
@@ -5030,10 +5030,10 @@ class AnsibleGalaxyAdapter(BaseAdapter):
                  if isinstance(d.get("namespace"),dict) else d.get("namespace","?")
             hv = d.get("highest_version") or {}
             out.append(_row(d.get("name","?"), "Ansible Galaxy",
-                            hv.get("version","N/A"), d.get("description","â€”"), "â€”", 0,
-                            _m_user(ns), "â€”",
+                            hv.get("version","N/A"), d.get("description","—"), "—", 0,
+                            _m_user(ns), "—",
                             f"https://galaxy.ansible.com/{ns}/{d.get('name','')}",
-                            last_updated=d.get("modified","") or "â€”"))
+                            last_updated=d.get("modified","") or "—"))
         return out
 
 
@@ -5047,12 +5047,12 @@ class ChocolateyAdapter(BaseAdapter):
         entries = data.get("d",{}).get("results",[]) or data.get("value",[])
         if not entries: return None
         e            = entries[0]
-        last_updated = _fmt_date(e.get("Published","") or e.get("LastEdited","") or "â€”")
-        # Source button â†’ always the Chocolatey package page
+        last_updated = _fmt_date(e.get("Published","") or e.get("LastEdited","") or "—")
+        # Source button → always the Chocolatey package page
         return _row(pkg, "Chocolatey", e.get("Version","N/A"),
-                    e.get("Description",""), "â€”",
+                    e.get("Description",""), "—",
                     e.get("DownloadCount",0),
-                    "Community Â· Chocolatey", "â€”",
+                    "Community · Chocolatey", "—",
                     f"https://community.chocolatey.org/packages/{pkg}",
                     last_updated=last_updated)
 
@@ -5065,11 +5065,11 @@ class ChocolateyAdapter(BaseAdapter):
         data    = r.json()
         entries = data.get("d",{}).get("results",[]) or data.get("value",[])
         return [_row(e.get("Id","?"), "Chocolatey", e.get("Version","N/A"),
-                     e.get("Description",""), "â€”",
+                     e.get("Description",""), "—",
                      e.get("DownloadCount",0),
-                     "Community Â· Chocolatey", "â€”",
+                     "Community · Chocolatey", "—",
                      f"https://community.chocolatey.org/packages/{e.get('Id','')}",
-                     last_updated=_fmt_date(e.get("Published","") or e.get("LastEdited","") or "â€”"))
+                     last_updated=_fmt_date(e.get("Published","") or e.get("LastEdited","") or "—"))
                 for e in entries]
 
 
@@ -5095,14 +5095,14 @@ class VSCodeAdapter(BaseAdapter):
                     if p.get("key")=="Microsoft.VisualStudio.Services.Links.Source"),"N/A")
         inst = next((int(s.get("value",0)) for s in (ext.get("statistics") or [])
                      if s.get("statisticName")=="install"),0)
-        pub_display  = pub.get("displayName") or pub.get("publisherName","â€”")
-        last_updated = ver.get("lastUpdated","") or "â€”"
+        pub_display  = pub.get("displayName") or pub.get("publisherName","—")
+        last_updated = ver.get("lastUpdated","") or "—"
         # Library shows just the extension name; publisher stays in Maintainer
-        # Source button â†’ always the VS Code Marketplace page
+        # Source button → always the VS Code Marketplace page
         return _row(ext.get("extensionName", fid), "VS Code Marketplace",
                     ver.get("version","N/A"),
-                    ext.get("shortDescription",""), "â€”", inst,
-                    _m_auto(pub_display), "â€”",
+                    ext.get("shortDescription",""), "—", inst,
+                    _m_auto(pub_display), "—",
                     f"https://marketplace.visualstudio.com/items?itemName={fid}",
                     last_updated=last_updated)
 
@@ -5123,18 +5123,18 @@ class VSCodeAdapter(BaseAdapter):
             pub  = ext.get("publisher",{}); ver = (ext.get("versions") or [{}])[0]
             inst = next((int(s.get("value",0)) for s in (ext.get("statistics") or [])
                          if s.get("statisticName")=="install"),0)
-            pub_display = pub.get("displayName") or pub.get("publisherName","â€”")
+            pub_display = pub.get("displayName") or pub.get("publisherName","—")
             _fid = f"{pub.get('publisherName')}.{ext.get('extensionName')}"
             out.append(_row(ext.get("extensionName", _fid),
                             "VS Code Marketplace", ver.get("version","N/A"),
-                            ext.get("shortDescription",""), "â€”", inst,
-                            _m_auto(pub_display), "â€”",
+                            ext.get("shortDescription",""), "—", inst,
+                            _m_auto(pub_display), "—",
                             f"https://marketplace.visualstudio.com/items?itemName={_fid}",
-                            last_updated=ver.get("lastUpdated","") or "â€”"))
+                            last_updated=ver.get("lastUpdated","") or "—"))
         return out
 
 
-# â”€â”€ Tier 2 (optional keys) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ── Tier 2 (optional keys) ─────────────────────────────────────────────────────
 
 class GHCRAdapter(BaseAdapter):
     def fetch(self, pkg, token=None, **kw):
@@ -5150,12 +5150,12 @@ class GHCRAdapter(BaseAdapter):
                 v = versions_data[0].get("name","N/A") if versions_data else "N/A"
                 # GitHub Packages API returns updated_at + created_at per version
                 lu = (versions_data[0].get("updated_at") or
-                      versions_data[0].get("created_at") or "â€”") if versions_data else "â€”"
+                      versions_data[0].get("created_at") or "—") if versions_data else "—"
                 m = _m_org(owner) if ent == "orgs" else _m_user(owner)
                 # Library shows just the image name; owner stays in Maintainer.
-                # GHCR owner is already a GitHub org/user â€” perfect for country.
+                # GHCR owner is already a GitHub org/user — perfect for country.
                 return _row(p, "GHCR", v,
-                            "GitHub Container Registry", "â€”", 0, m, "â€”",
+                            "GitHub Container Registry", "—", 0, m, "—",
                             f"https://ghcr.io/{pkg}",
                             last_updated=lu,
                             gh_owner=owner)
@@ -5172,13 +5172,13 @@ class KaggleAdapter(BaseAdapter):
         res = r.json()
         if not res: return None
         d   = res[0]; ref = d.get("ref",pkg)
-        owner = ref.split("/")[0] if "/" in ref else "â€”"
+        owner = ref.split("/")[0] if "/" in ref else "—"
         dataset_name = ref.split("/")[-1] if "/" in ref else ref
-        lud = str(d.get("lastUpdated","")) or "â€”"
+        lud = str(d.get("lastUpdated","")) or "—"
         # Library shows just the dataset name; owner stays in Maintainer
         return _row(dataset_name, "Kaggle", lud[:10],
-                    d.get("subtitle",""), "â€”", d.get("downloadCount",0),
-                    _m_user(owner), "â€”", f"https://kaggle.com/datasets/{ref}",
+                    d.get("subtitle",""), "—", d.get("downloadCount",0),
+                    _m_user(owner), "—", f"https://kaggle.com/datasets/{ref}",
                     last_updated=lud)
 
     def search(self, q, kaggle_username=None, kaggle_key=None, **kw):
@@ -5189,10 +5189,10 @@ class KaggleAdapter(BaseAdapter):
         if r.status_code != 200: return []
         return [_row(d.get("ref","?").split("/")[-1], "Kaggle",
                      str(d.get("lastUpdated",""))[:10] or "N/A",
-                     d.get("subtitle",""), "â€”", d.get("downloadCount",0),
-                     _m_user(d.get("ref","?").split("/")[0] if "/" in d.get("ref","?") else "â€”"),
-                     "â€”", f"https://kaggle.com/datasets/{d.get('ref','')}",
-                     last_updated=str(d.get("lastUpdated","")) or "â€”")
+                     d.get("subtitle",""), "—", d.get("downloadCount",0),
+                     _m_user(d.get("ref","?").split("/")[0] if "/" in d.get("ref","?") else "—"),
+                     "—", f"https://kaggle.com/datasets/{d.get('ref','')}",
+                     last_updated=str(d.get("lastUpdated","")) or "—")
                 for d in r.json()]
 
 
@@ -5207,16 +5207,16 @@ class NexusModsAdapter(BaseAdapter):
         d = r.json()
         # Library shows just the mod name (Nexus Mods already returns clean name)
         return _row(d.get("name", mod_id), "Nexus Mods", d.get("version","N/A"),
-                    d.get("summary",""), "â€”", d.get("mod_downloads",0),
-                    _m_user(d.get("user",{}).get("name","â€”")), "â€”",
+                    d.get("summary",""), "—", d.get("mod_downloads",0),
+                    _m_user(d.get("user",{}).get("name","—")), "—",
                     d.get("nexusmods_url","N/A"),
-                    last_updated=d.get("updated_timestamp","") or "â€”")
+                    last_updated=d.get("updated_timestamp","") or "—")
 
 
-# â”€â”€ Linux distros via Repology (APT/Debian, APT/Ubuntu, YUM/Fedora, etc.) â”€â”€â”€â”€â”€â”€
+# ── Linux distros via Repology (APT/Debian, APT/Ubuntu, YUM/Fedora, etc.) ──────
 # Repology aggregates packages from 300+ repositories in one API call.
 _REPOLOGY_REPOS = {
-    # repo key        â†’ (display Registry name, distro label)
+    # repo key        → (display Registry name, distro label)
     "debian_13":      ("APT/Debian",  "Debian 13 (Trixie)"),
     "debian_12":      ("APT/Debian",  "Debian 12 (Bookworm)"),
     "ubuntu_24_04":   ("APT/Ubuntu",  "Ubuntu 24.04 LTS"),
@@ -5234,7 +5234,7 @@ _REPOLOGY_REPOS = {
 class LinuxDistribAdapter(BaseAdapter):
     """
     Covers APT (Debian/Ubuntu), YUM/DNF (Fedora/RHEL/CentOS), Alpine, Arch, openSUSE
-    via Repology API â€” one call, all distributions.
+    via Repology API — one call, all distributions.
     """
     TTL = 86400
 
@@ -5243,7 +5243,7 @@ class LinuxDistribAdapter(BaseAdapter):
         """
         Look up the upload date for a Debian package version via snapshot.debian.org.
         Repology itself doesn't expose dates, but Debian's snapshot archive does.
-        Returns ISO date (YYYY-MM-DD) or "â€”".
+        Returns ISO date (YYYY-MM-DD) or "—".
         """
         try:
             r = requests.get(
@@ -5252,7 +5252,7 @@ class LinuxDistribAdapter(BaseAdapter):
                 timeout=8,
                 headers={"User-Agent": "RegistryIntelligencePlatform/1.0"})
             if r.status_code != 200:
-                return "â€”"
+                return "—"
             data = r.json().get("fileinfo", {}) or {}
             earliest = None
             for _hash, infos in data.items():
@@ -5265,9 +5265,9 @@ class LinuxDistribAdapter(BaseAdapter):
                         iso = f"{first_seen[0:4]}-{first_seen[4:6]}-{first_seen[6:8]}"
                         if earliest is None or iso < earliest:
                             earliest = iso
-            return earliest or "â€”"
+            return earliest or "—"
         except Exception:
-            return "â€”"
+            return "—"
 
     @staticmethod
     def _arch_last_update(pkg: str) -> str:
@@ -5280,10 +5280,10 @@ class LinuxDistribAdapter(BaseAdapter):
             if r.status_code == 200:
                 results = r.json().get("results", [])
                 if results:
-                    return (results[0].get("last_update") or "â€”")
+                    return (results[0].get("last_update") or "—")
         except Exception:
             pass
-        return "â€”"
+        return "—"
 
     @staticmethod
     def _fedora_last_push(pkg: str) -> str:
@@ -5299,10 +5299,10 @@ class LinuxDistribAdapter(BaseAdapter):
                 updates = r.json().get("updates", [])
                 if updates:
                     return (updates[0].get("date_pushed") or
-                            updates[0].get("date_submitted") or "â€”")
+                            updates[0].get("date_submitted") or "—")
         except Exception:
             pass
-        return "â€”"
+        return "—"
 
     def _repology(self, pkg: str) -> list:
         try:
@@ -5318,7 +5318,7 @@ class LinuxDistribAdapter(BaseAdapter):
                 repo = entry.get("repo", "")
                 if repo not in _REPOLOGY_REPOS:
                     continue
-                # Only keep the canonical source package â€” skip sub-packages
+                # Only keep the canonical source package — skip sub-packages
                 # like nginx-debug, nginx-doc, libssl-dev etc.
                 srcname = entry.get("srcname", "").lower()
                 binname = entry.get("binname", "").lower()
@@ -5334,15 +5334,15 @@ class LinuxDistribAdapter(BaseAdapter):
                 seen_reg.add(reg_name)
                 version   = entry.get("version", "N/A") or "N/A"
                 origver   = entry.get("origversion", "") or version
-                maint_raw = ", ".join(entry.get("maintainers", [])[:2]) or "â€”"
-                lic_raw   = ", ".join(entry.get("licenses",   [])[:2]) or "â€”"
-                summary   = entry.get("summary", "â€”") or "â€”"
+                maint_raw = ", ".join(entry.get("maintainers", [])[:2]) or "—"
+                lic_raw   = ", ".join(entry.get("licenses",   [])[:2]) or "—"
+                summary   = entry.get("summary", "—") or "—"
 
                 # Each distro has its own authoritative date source:
-                # â€¢ Debian / Ubuntu   â†’ snapshot.debian.org `.dsc` first_seen
-                # â€¢ Arch              â†’ archlinux.org packages API `last_update`
-                # â€¢ Fedora / RHEL / CentOS â†’ bodhi.fedoraproject.org `date_pushed`
-                last_updated = "â€”"
+                # • Debian / Ubuntu   → snapshot.debian.org `.dsc` first_seen
+                # • Arch              → archlinux.org packages API `last_update`
+                # • Fedora / RHEL / CentOS → bodhi.fedoraproject.org `date_pushed`
+                last_updated = "—"
                 if reg_name in ("APT/Debian", "APT/Ubuntu"):
                     last_updated = self._debian_upload_date(pkg.lower(), origver)
                 elif reg_name == "Pacman/Arch":
@@ -5352,7 +5352,7 @@ class LinuxDistribAdapter(BaseAdapter):
 
                 rows.append(_row(
                     pkg, reg_name, version, summary, lic_raw, 0,
-                    _m_auto(maint_raw), "â€”",
+                    _m_auto(maint_raw), "—",
                     f"https://repology.org/project/{pkg}/versions",
                     last_updated=last_updated))
             return rows
@@ -5367,7 +5367,7 @@ class LinuxDistribAdapter(BaseAdapter):
         return self._repology(q)
 
 
-# â”€â”€ Winget (Windows Package Manager) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ── Winget (Windows Package Manager) ──────────────────────────────────────────
 class WingetAdapter(BaseAdapter):
     """Windows Package Manager via the unofficial-but-stable winget.run community API."""
     TTL = 86400
@@ -5386,33 +5386,33 @@ class WingetAdapter(BaseAdapter):
         versions = p.get("Versions") or []
         ver    = versions[0] if versions else latest.get("PackageVersion") or "N/A"
         desc   = (latest.get("Description") or p.get("Description") or
-                  ", ".join(latest.get("Tags") or []) or "â€”")
-        lic    = latest.get("License") or "â€”"
-        updated  = (p.get("UpdatedAt") or p.get("updatedAt") or "â€”")[:10]
-        m   = _m_org(pub) if pub else "â€”"
-        # Source button â†’ always the winget.run page for this package
+                  ", ".join(latest.get("Tags") or []) or "—")
+        lic    = latest.get("License") or "—"
+        updated  = (p.get("UpdatedAt") or p.get("updatedAt") or "—")[:10]
+        m   = _m_org(pub) if pub else "—"
+        # Source button → always the winget.run page for this package
         url = (f"https://winget.run/pkg/{pub}/{pid}".replace(" ", "")
                if pub else "https://winget.run/")
-        return _row(name, "Winget", ver, desc, lic, 0, m, "â€”", url, last_updated=updated)
+        return _row(name, "Winget", ver, desc, lic, 0, m, "—", url, last_updated=updated)
 
     @staticmethod
     def _winget_score(query: str, raw: dict) -> float:
         """
         Score a raw winget API result dict against the user query.
 
-        Security-researcher standard â€” NO fuzzy/SequenceMatcher guessing.
+        Security-researcher standard — NO fuzzy/SequenceMatcher guessing.
         Only deterministic rules that cannot produce false positives:
 
-          Rule 1 â€” Exact match (after stripping punctuation/case): score 1.0
-          Rule 2 â€” One token fully contains the other (both â‰¥ 4 chars): score 0.92
-          Rule 3 â€” Full package ID (Publisher.Package) exact match: score 1.0
-          Anything else: score 0.0  (reject â€” never show uncertain data)
+          Rule 1 — Exact match (after stripping punctuation/case): score 1.0
+          Rule 2 — One token fully contains the other (both ≥ 4 chars): score 0.92
+          Rule 3 — Full package ID (Publisher.Package) exact match: score 1.0
+          Anything else: score 0.0  (reject — never show uncertain data)
 
         Surfaces checked: display Name, full package Id, Id suffix after last dot.
         Example: "GoAuthing" query vs "z4yx.GoAuthing"
-          â†’ id_suffix = "GoAuthing" â†’ stripped = "goauthing" = query â†’ 1.0 âœ“
+          → id_suffix = "GoAuthing" → stripped = "goauthing" = query → 1.0 ✓
         Example: "GoAuthing" query vs "PaperCutSoftware.NG"
-          â†’ id_suffix = "NG" â†’ too short (< 4 chars) for containment check â†’ 0.0 âœ“
+          → id_suffix = "NG" → too short (< 4 chars) for containment check → 0.0 ✓
         """
         q   = re.sub(r"[^a-z0-9]", "", query.lower()).strip()
         if not q:
@@ -5430,16 +5430,16 @@ class WingetAdapter(BaseAdapter):
         if re.sub(r"[^a-z0-9.]", "", query.lower()) == pid:
             return 1.0
 
-        # â”€â”€ DISPLAY NAME GATE â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        # ── DISPLAY NAME GATE ────────────────────────────────────────────────
         # Reject results where the display name doesn't start with the query.
-        # Example: query "react" vs name "Win11React" â€” name doesn't START
+        # Example: query "react" vs name "Win11React" — name doesn't START
         # with "react" (it starts with "Win11"), so this is NOT the package
         # the user wants. The id_suffix may equal "react" but Win11React is
         # a Windows skin, not the React framework.
         #
         # Vendor.Product names like "Mozilla Firefox" / "Microsoft Edge" are
         # still discoverable via the publisher.id route (typing "Mozilla.Firefox"
-        # or "Firefox" alone â€” Firefox matches as the display name itself).
+        # or "Firefox" alone — Firefox matches as the display name itself).
         name_orig = latest.get("Name") or raw.get("Name") or pid
         # First word of the display name (split on whitespace/punctuation/CamelCase)
         first_token = re.split(r'[\s\-_.:]|(?<=[a-z0-9])(?=[A-Z])', name_orig.strip())[0]
@@ -5448,34 +5448,34 @@ class WingetAdapter(BaseAdapter):
         # Accept only if the display name (or its first token) STARTS with the query
         if name_s and name_s != q and not name_s.startswith(q):
             # Fall back to first-token check: "Firefox" in "Mozilla Firefox"
-            # would be caught later via id_suffix â€” but here we ensure the
+            # would be caught later via id_suffix — but here we ensure the
             # leading word is at least the query itself.
             if first_token_s != q and not first_token_s.startswith(q):
-                # Reject â€” name has unrelated text before the query word
+                # Reject — name has unrelated text before the query word
                 return 0.0
 
         for surface in [name, pid, id_suffix]:
             s = re.sub(r"[^a-z0-9]", "", surface)
             if not s:
                 continue
-            # Rule 1 â€” exact match (case-insensitive, punctuation-stripped)
+            # Rule 1 — exact match (case-insensitive, punctuation-stripped)
             if q == s:
                 return 1.0
-            # Rule 2 â€” PREFIX or SUFFIX match (not arbitrary substring).
+            # Rule 2 — PREFIX or SUFFIX match (not arbitrary substring).
             # This catches "react" matching "react-dom" / "reactjs" but
             # blocks "react" matching "Win11React".
-            # Both sides must be â‰¥ 4 chars to avoid noise from short tokens.
+            # Both sides must be ≥ 4 chars to avoid noise from short tokens.
             if len(q) >= 4 and len(s) >= 4:
                 if q == s or s.startswith(q) or s.endswith(q) or \
                    q.startswith(s) or q.endswith(s):
                     return 0.92
-        # No deterministic rule matched â†’ unknown â†’ return 0 (safe default)
+        # No deterministic rule matched → unknown → return 0 (safe default)
         return 0.0
 
     def _best_match(self, pkg, candidates):
         """
         Return the single best-matching parsed result from a list of raw API dicts.
-        Requires score â‰¥ 0.80 (exact or containment only â€” see _winget_score).
+        Requires score ≥ 0.80 (exact or containment only — see _winget_score).
         Returns None if no candidate meets the bar; never returns uncertain data.
         """
         best_raw, best_score = None, 0.0
@@ -5493,11 +5493,11 @@ class WingetAdapter(BaseAdapter):
         headers = {"User-Agent": "RegistryIntelligencePlatform/1.0"}
         pkg = pkg.strip()
 
-        # â”€â”€ Stage 1: Exact ID endpoint â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        # ── Stage 1: Exact ID endpoint ────────────────────────────────────
         # Handles inputs already in "Publisher.Package" format (most reliable).
         # Also tried for bare names in case they happen to be valid IDs.
         id_candidates = [pkg]
-        # camelCase â†’ "Publisher.PackageName" style: "GoAuthing" stays as-is
+        # camelCase → "Publisher.PackageName" style: "GoAuthing" stays as-is
         # but also try splitting camelCase: "Go-Authing", "Go Authing"
         spaced = re.sub(r"([a-z])([A-Z])", r"\1 \2", pkg)
         hyphen = re.sub(r"([a-z])([A-Z])", r"\1-\2", pkg).lower()
@@ -5512,13 +5512,13 @@ class WingetAdapter(BaseAdapter):
                 if r.status_code == 200:
                     d = r.json()
                     if isinstance(d, dict) and ("Id" in d or "PackageIdentifier" in d):
-                        # Verify the result actually matches â€” never blindly accept
+                        # Verify the result actually matches — never blindly accept
                         if self._winget_score(pkg, d) >= 0.80:
                             return self._parse(d)
             except Exception:
                 pass
 
-        # â”€â”€ Stage 2: Search API â€” 25 results per variant â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        # ── Stage 2: Search API — 25 results per variant ─────────────────
         # More candidates = more chance of finding the real package.
         all_candidates: list = []
         search_variants = list(dict.fromkeys([pkg, spaced, hyphen]))  # dedup, preserve order
@@ -5542,10 +5542,10 @@ class WingetAdapter(BaseAdapter):
             if result:
                 return result
 
-        # â”€â”€ Stage 3: GitHub fallback â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        # ── Stage 3: GitHub fallback ──────────────────────────────────────
         # winget.run only indexes ~70 % of packages. The official source is
         # microsoft/winget-pkgs on GitHub. The fallback uses GitHub repo search
-        # (unauthenticated) to discover publisherâ†’package, then reads the manifest
+        # (unauthenticated) to discover publisher→package, then reads the manifest
         # directly. A token unlocks code-search as a final safety net.
         return self._github_manifest_fetch(pkg, kw.get("token"))
 
@@ -5554,7 +5554,7 @@ class WingetAdapter(BaseAdapter):
         Search the official microsoft/winget-pkgs GitHub repo for a package manifest.
 
         Strategy (no token required for steps 1-3):
-          1. GitHub repo search â€” finds the repo owner for the package â†’ publisher hint
+          1. GitHub repo search — finds the repo owner for the package → publisher hint
           2. winget.run exact-ID lookup using publisher.package
           3. Raw manifest fetch from microsoft/winget-pkgs using the known path
           4. (Token only) GitHub code search as final fallback
@@ -5591,7 +5591,7 @@ class WingetAdapter(BaseAdapter):
                     # Definitively not in winget-pkgs
                     return None
                 if cr.status_code != 200:
-                    # Rate-limited or transient error â€” signal caller with None
+                    # Rate-limited or transient error — signal caller with None
                     # so it falls back to the GitHub repo data we already have
                     return None
                 entries     = cr.json()
@@ -5604,8 +5604,8 @@ class WingetAdapter(BaseAdapter):
                 return None
 
             if not version_dir:
-                return _row(pkg_name, "Winget", "â€”", "â€”", "â€”", 0,
-                            _m_user(publisher), "â€”", pkg_tree_url)
+                return _row(pkg_name, "Winget", "—", "—", "—", 0,
+                            _m_user(publisher), "—", pkg_tree_url)
 
             pkg_id       = f"{publisher}.{pkg_name}"
             manifest_url = (
@@ -5617,9 +5617,9 @@ class WingetAdapter(BaseAdapter):
             try:
                 mr = requests.get(manifest_url, timeout=TIMEOUT)
                 if mr.status_code != 200:
-                    # Version dir known but YAML unreachable â†’ return partial data
-                    return _row(pkg_name, "Winget", version_dir, "â€”", "â€”", 0,
-                                _m_user(publisher), "â€”", pkg_tree_url)
+                    # Version dir known but YAML unreachable → return partial data
+                    return _row(pkg_name, "Winget", version_dir, "—", "—", 0,
+                                _m_user(publisher), "—", pkg_tree_url)
 
                 manifest = mr.text
                 def _yval(key):
@@ -5628,31 +5628,31 @@ class WingetAdapter(BaseAdapter):
 
                 name        = _yval("PackageName")      or pkg_name
                 version     = _yval("PackageVersion")   or version_dir
-                description = _yval("ShortDescription") or "â€”"
+                description = _yval("ShortDescription") or "—"
                 homepage    = _yval("PackageUrl")        or ""
-                license_    = _yval("License")           or "â€”"
+                license_    = _yval("License")           or "—"
                 publisher_n = _yval("Publisher")         or publisher
                 maintainer  = _m_auto(publisher_n)
 
-                # Source button â†’ always the winget-pkgs manifest tree page
+                # Source button → always the winget-pkgs manifest tree page
                 # (not the homepage, which could be any random vendor site)
                 return _row(name, "Winget", version, description, license_,
-                            0, maintainer, "â€”",
+                            0, maintainer, "—",
                             f"https://winget.run/pkg/{publisher_n}/{pkg_name}".replace(" ", ""))
             except Exception:
-                return _row(pkg_name, "Winget", version_dir, "â€”", "â€”", 0,
-                            _m_user(publisher), "â€”", pkg_tree_url)
+                return _row(pkg_name, "Winget", version_dir, "—", "—", 0,
+                            _m_user(publisher), "—", pkg_tree_url)
 
-        # â”€â”€ Step 1: GitHub REPO search â€” name-exact, unauthenticated â”€â”€â”€â”€â”€â”€â”€â”€
+        # ── Step 1: GitHub REPO search — name-exact, unauthenticated ────────
         # "+in:name" restricts matches to repos whose NAME equals the query,
         # eliminating repos that merely mention the package in description/readme.
         # We do TWO passes over the results:
-        #   Pass A â€” try each repo as a winget publisher; return immediately on
+        #   Pass A — try each repo as a winget publisher; return immediately on
         #            confirmed match (winget.run ID found OR manifest in winget-pkgs)
-        #   Pass B â€” if nothing confirmed, return the highest-starred exact-name
+        #   Pass B — if nothing confirmed, return the highest-starred exact-name
         #            repo as a "best-effort" result so the user sees SOMETHING
         #            rather than "No matches found". This is clearly labelled
-        #            with version "â€”" to show the data is incomplete.
+        #            with version "—" to show the data is incomplete.
         best_fallback_row  = None   # Pass B candidate
         try:
             repo_url = (
@@ -5663,52 +5663,52 @@ class WingetAdapter(BaseAdapter):
             if rr.status_code == 200:
                 repo_items = rr.json().get("items", [])
 
-                # â”€â”€ Pass A: look for confirmed winget package â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+                # ── Pass A: look for confirmed winget package ──────────────
                 for repo in repo_items:
                     owner         = repo.get("owner", {}).get("login", "")
                     repo_name     = repo.get("name", "")
                     repo_url_html = repo.get("html_url", "")
-                    repo_desc     = (repo.get("description") or "").strip() or "â€”"
+                    repo_desc     = (repo.get("description") or "").strip() or "—"
 
                     if repo_name.lower() != pkg_lower:
                         continue
 
                     # Save first exact-name repo as Pass B fallback.
                     # Extract every available field from the GitHub API response so
-                    # the user sees real data rather than a row of "â€”" dashes.
+                    # the user sees real data rather than a row of "—" dashes.
                     if best_fallback_row is None:
-                        _gh_license   = ((repo.get("license") or {}).get("spdx_id") or "â€”")
-                        _gh_pushed    = repo.get("pushed_at") or "â€”"   # ISO-8601 â†’ _fmt_date
+                        _gh_license   = ((repo.get("license") or {}).get("spdx_id") or "—")
+                        _gh_pushed    = repo.get("pushed_at") or "—"   # ISO-8601 → _fmt_date
                         _gh_stars     = repo.get("stargazers_count") or 0
                         _gh_topics    = ", ".join(repo.get("topics") or [])
                         _gh_lang      = repo.get("language") or ""
                         # Enrich description with language / topics if repo gave none
-                        if repo_desc == "â€”":
+                        if repo_desc == "—":
                             if _gh_lang:
                                 repo_desc = f"{_gh_lang} project"
                             elif _gh_topics:
                                 repo_desc = _gh_topics[:72]
-                        # â”€â”€ Fetch latest version (release tag, then tag fallback) â”€â”€
+                        # ── Fetch latest version (release tag, then tag fallback) ──
                         # The repos endpoint doesn't include version info, so we make
                         # a follow-up call. Most popular projects publish releases;
                         # for those without, we fall back to the latest tag.
-                        _gh_version = "â€”"
+                        _gh_version = "—"
                         try:
                             _rel = requests.get(
                                 f"https://api.github.com/repos/{owner}/{repo_name}/releases/latest",
                                 headers=gh_headers, timeout=6)
                             if _rel.status_code == 200:
                                 _gh_version = (_rel.json().get("tag_name") or
-                                               _rel.json().get("name") or "â€”")
+                                               _rel.json().get("name") or "—")
                             elif _rel.status_code == 404:
-                                # No releases â€” try tags as fallback
+                                # No releases — try tags as fallback
                                 _tag = requests.get(
                                     f"https://api.github.com/repos/{owner}/{repo_name}/tags?per_page=1",
                                     headers=gh_headers, timeout=6)
                                 if _tag.status_code == 200:
                                     _tags = _tag.json()
                                     if _tags:
-                                        _gh_version = _tags[0].get("name", "â€”")
+                                        _gh_version = _tags[0].get("name", "—")
                         except Exception:
                             pass
                         # Clean common version prefix "v"
@@ -5716,17 +5716,17 @@ class WingetAdapter(BaseAdapter):
                                 and len(_gh_version) > 1 and _gh_version[1].isdigit():
                             _gh_version = _gh_version[1:]
                         best_fallback_row = _row(
-                            repo_name, "GitHub", _gh_version or "â€”",
+                            repo_name, "GitHub", _gh_version or "—",
                             repo_desc, _gh_license, _gh_stars,
-                            _m_user(owner), "â€”",
+                            _m_user(owner), "—",
                             repo_url_html,
                             last_updated=_gh_pushed
                         )
 
                     # Try exact winget.run ID: "{owner}.{package}"
-                    # MUST verify the returned package actually matches the query â€”
+                    # MUST verify the returned package actually matches the query —
                     # winget.run can return a different package from the same publisher
-                    # (e.g. "Microsoft.GoAuthing" â†’ returns Microsoft OpenJDK).
+                    # (e.g. "Microsoft.GoAuthing" → returns Microsoft OpenJDK).
                     wid = f"{owner}.{repo_name}"
                     try:
                         wr = requests.get(
@@ -5737,7 +5737,7 @@ class WingetAdapter(BaseAdapter):
                             d = wr.json()
                             if isinstance(d, dict) and ("Id" in d or "PackageIdentifier" in d):
                                 if self._winget_score(pkg, d) >= 0.80:
-                                    return self._parse(d)   # confirmed + verified âœ“
+                                    return self._parse(d)   # confirmed + verified ✓
                     except Exception:
                         pass
 
@@ -5745,14 +5745,14 @@ class WingetAdapter(BaseAdapter):
                     result = _fetch_manifest(owner, repo_name)
                     if result:
                         # Patch last-updated from GitHub push date if the manifest
-                        # YAML didn't supply it â€” no extra API call needed.
-                        if result.get("Last Updated") in ("â€”", None, ""):
+                        # YAML didn't supply it — no extra API call needed.
+                        if result.get("Last Updated") in ("—", None, ""):
                             _pushed = repo.get("pushed_at") or ""
                             if _pushed:
                                 result["Last Updated"] = _fmt_date(_pushed)
-                        return result               # confirmed via winget-pkgs âœ“
+                        return result               # confirmed via winget-pkgs ✓
 
-                # â”€â”€ Pass B: guaranteed fallback (first exact-name GitHub repo) â”€
+                # ── Pass B: guaranteed fallback (first exact-name GitHub repo) ─
                 # We found a real GitHub repo whose name exactly matches the query
                 # but couldn't reach the winget manifest (rate limit, not submitted
                 # to winget, etc.). Return the GitHub repo data so the user gets
@@ -5762,7 +5762,7 @@ class WingetAdapter(BaseAdapter):
         except Exception:
             pass
 
-        # â”€â”€ Step 4 (token only): GitHub CODE search for manifest path â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        # ── Step 4 (token only): GitHub CODE search for manifest path ─────────
         if not token:
             return None
         try:
@@ -5816,10 +5816,10 @@ class WingetAdapter(BaseAdapter):
             return []
 
 
-# â”€â”€ Chrome Web Store â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ── Chrome Web Store ───────────────────────────────────────────────────────────
 class ChromeWebStoreAdapter(BaseAdapter):
     """
-    Chrome Web Store â€” uses the store's internal detail endpoint.
+    Chrome Web Store — uses the store's internal detail endpoint.
     Fetch by extension ID; search falls back to the CWS search page JSON.
     """
     TTL = 86400
@@ -5833,7 +5833,7 @@ class ChromeWebStoreAdapter(BaseAdapter):
                "&action=search&count=5&q={q}")
 
     def _parse_response(self, raw: str) -> list:
-        """CWS returns )]}'\n then JSON â€” strip the XSSI prefix."""
+        """CWS returns )]}'\n then JSON — strip the XSSI prefix."""
         import re as _re
         text = re.sub(r"^\)\]\}'\\?\n?", "", raw.strip(), flags=re.MULTILINE)
         try:
@@ -5847,17 +5847,17 @@ class ChromeWebStoreAdapter(BaseAdapter):
                 try:
                     ext_id   = item[0]
                     name     = item[1]
-                    desc     = item[6] or "â€”"
-                    author   = item[8] or "â€”"
+                    desc     = item[6] or "—"
+                    author   = item[8] or "—"
                     version  = item[7] or "N/A"
-                    rating   = str(round(float(item[12] or 0), 1)) if item[12] else "â€”"
+                    rating   = str(round(float(item[12] or 0), 1)) if item[12] else "—"
                     users    = int(item[23] or 0) if item[23] else 0
                     icon_url = item[3] or ""
                     store_url= f"https://chromewebstore.google.com/detail/{ext_id}"
                     items.append(_row(
                         name, "Chrome Web Store", version,
-                        f"{desc} (Rating: {rating}/5)", "â€”",
-                        users, _m_auto(author), "â€”", store_url, last_updated="â€”"))
+                        f"{desc} (Rating: {rating}/5)", "—",
+                        users, _m_auto(author), "—", store_url, last_updated="—"))
                 except (IndexError, TypeError):
                     continue
         except (IndexError, TypeError):
@@ -5893,10 +5893,10 @@ class ChromeWebStoreAdapter(BaseAdapter):
         return []
 
 
-# â”€â”€ JFrog Artifactory â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ── JFrog Artifactory ──────────────────────────────────────────────────────────
 class ArtifactoryAdapter(BaseAdapter):
     """
-    JFrog Artifactory â€” uses the Artifactory REST API.
+    JFrog Artifactory — uses the Artifactory REST API.
     Requires: instance URL (e.g. https://mycompany.jfrog.io/artifactory)
     Optional: API key or username:password for authenticated repos.
     """
@@ -5920,7 +5920,7 @@ class ArtifactoryAdapter(BaseAdapter):
                 uri   = item.get("uri","")
                 fname = uri.split("/")[-1] if uri else pkg
                 # Fetch item properties for version/size/dates
-                ver, dl, lu = "N/A", 0, "â€”"
+                ver, dl, lu = "N/A", 0, "—"
                 try:
                     rp = requests.get(uri, headers=self._hdrs, timeout=5)
                     if rp.status_code == 200:
@@ -5929,12 +5929,12 @@ class ArtifactoryAdapter(BaseAdapter):
                         dl   = info.get("size", 0)
                         # Artifactory exposes lastUpdated + lastModified
                         lu   = (info.get("lastUpdated") or
-                                info.get("lastModified") or "â€”")
+                                info.get("lastModified") or "—")
                 except Exception:
                     pass
                 results.append(_row(
-                    fname, "Artifactory", ver, "â€”", "â€”", dl,
-                    "â€”", "â€”", uri, last_updated=lu))
+                    fname, "Artifactory", ver, "—", "—", dl,
+                    "—", "—", uri, last_updated=lu))
             return results
         except Exception:
             return []
@@ -5947,7 +5947,7 @@ class ArtifactoryAdapter(BaseAdapter):
         return self._search(q)
 
 
-# â”€â”€ Sonatype Nexus Repository â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ── Sonatype Nexus Repository ──────────────────────────────────────────────────
 class NexusRepositoryAdapter(BaseAdapter):
     """
     Sonatype Nexus Repository OSS / Pro.
@@ -5980,15 +5980,15 @@ class NexusRepositoryAdapter(BaseAdapter):
                 assets  = item.get("assets",[])
                 dl_url  = assets[0].get("downloadUrl","N/A") if assets else "N/A"
                 # Nexus asset has lastModified / blobCreated timestamps
-                lu = "â€”"
+                lu = "—"
                 if assets:
                     lu = (assets[0].get("lastModified") or
-                          assets[0].get("blobCreated")  or "â€”")
-                m = _m_auto(item.get("group","") or "â€”")
+                          assets[0].get("blobCreated")  or "—")
+                m = _m_auto(item.get("group","") or "—")
                 results.append(_row(
                     name, "Nexus Repository", version,
-                    f"Format: {fmt} Â· Repo: {repo}", "â€”", 0,
-                    m, "â€”", dl_url, last_updated=lu))
+                    f"Format: {fmt} · Repo: {repo}", "—", 0,
+                    m, "—", dl_url, last_updated=lu))
             return results
         except Exception:
             return []
@@ -6001,10 +6001,10 @@ class NexusRepositoryAdapter(BaseAdapter):
         return self._search(q)
 
 
-# â”€â”€ AWS ECR Public Gallery â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ── AWS ECR Public Gallery ─────────────────────────────────────────────────────
 class ECRPublicAdapter(BaseAdapter):
     """
-    Amazon ECR Public Gallery â€” public container images, no AWS credentials needed
+    Amazon ECR Public Gallery — public container images, no AWS credentials needed
     for searching the public gallery (uses anonymous access token from Cognito).
     """
     TTL = 3600
@@ -6029,15 +6029,15 @@ class ECRPublicAdapter(BaseAdapter):
     def _parse(self, repo: dict) -> dict:
         alias  = repo.get("registryAliasName","")
         name   = repo.get("repositoryName","?")
-        desc   = repo.get("repositoryDescription","â€”") or "â€”"
+        desc   = repo.get("repositoryDescription","—") or "—"
         stars  = repo.get("starCount",0) or 0
         pulls  = repo.get("downloadCount",0) or 0
         logo   = repo.get("logoImageBlob","")
         url    = f"https://gallery.ecr.aws/{alias}/{name}" if alias else f"https://gallery.ecr.aws/{name}"
-        m      = _m_org(alias) if alias else "â€”"
+        m      = _m_org(alias) if alias else "—"
         # Library shows just the repo name; alias stays in Maintainer
         return _row(name, "ECR Public", "latest",
-                    desc, "â€”", pulls, m, "â€”", url, last_updated="â€”")
+                    desc, "—", pulls, m, "—", url, last_updated="—")
 
     def fetch(self, pkg, **kw):
         # pkg can be "alias/repo" or just "repo"
@@ -6069,7 +6069,7 @@ class ECRPublicAdapter(BaseAdapter):
         return []
 
 
-# â”€â”€ Scan engine â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ── Scan engine ────────────────────────────────────────────────────────────────
 TIER1 = [
     PyPIAdapter(), NPMAdapter(), RubyGemsAdapter(), CratesAdapter(), PackagistAdapter(),
     MavenAdapter(), NuGetAdapter(), GoModulesAdapter(), HomebrewAdapter(),
@@ -6124,7 +6124,7 @@ def run_audit(query, github_token=None, kaggle_username=None, kaggle_key=None,
             return data, None
         except Exception as e:
             # Network-level failures (DNS, timeout, SSL, proxy) are silently
-            # skipped â€” they mean the user's machine can't reach that registry,
+            # skipped — they mean the user's machine can't reach that registry,
             # not a bug.  Only real programming errors get surfaced.
             _ename = type(e).__name__
             _emsg  = str(e)
@@ -6150,15 +6150,15 @@ def run_audit(query, github_token=None, kaggle_username=None, kaggle_key=None,
     return results, errors, search_mode
 
 
-# â”€â”€ Sidebar â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ── Sidebar ────────────────────────────────────────────────────────────────────
 with st.sidebar:
     st.markdown("""
     <div style="padding:0.5rem 0 1rem">
       <div style="color:#06b6d4;font-size:1rem;font-weight:800;letter-spacing:-0.3px">
-        ðŸ›¡ï¸ Registry Intel
+        🛡️ Registry Intel
       </div>
       <div style="color:#2e6080;font-size:0.7rem;margin-top:0.2rem">
-        v2.0 Â· Security Research Edition
+        v2.0 · Security Research Edition
       </div>
     </div>
     """, unsafe_allow_html=True)
@@ -6184,10 +6184,10 @@ with st.sidebar:
             f'<div class="reg-row">'
             f'<span class="rdot on"></span>'
             f'<span class="reg-name">{name}</span>'
-            f'<span class="reg-desc">Â· {desc}</span>'
+            f'<span class="reg-desc">· {desc}</span>'
             f'</div>', unsafe_allow_html=True)
 
-    st.markdown('<div class="sb-label">Opt-in Â· Credentials Required</div>', unsafe_allow_html=True)
+    st.markdown('<div class="sb-label">Opt-in · Credentials Required</div>', unsafe_allow_html=True)
     for name, desc in [("GHCR","GitHub containers"),("Kaggle","Datasets"),
                         ("Nexus Mods","Game mods"),
                         ("JFrog Artifactory","Private artifacts"),
@@ -6197,7 +6197,7 @@ with st.sidebar:
             f'<div class="reg-row">'
             f'<span class="rdot key"></span>'
             f'<span class="reg-name">{name}</span>'
-            f'<span class="reg-desc">Â· {desc}</span>'
+            f'<span class="reg-desc">· {desc}</span>'
             f'</div>', unsafe_allow_html=True)
 
     st.markdown('<div class="sb-label">No Public API</div>', unsafe_allow_html=True)
@@ -6211,10 +6211,10 @@ with st.sidebar:
     st.markdown('<div class="sb-label">API Keys & Credentials</div>', unsafe_allow_html=True)
     st.caption("Leave blank to skip that registry.")
     _gh_secret    = st.secrets.get("GITHUB_TOKEN", "") if hasattr(st, "secrets") else ""
-    github_token  = st.text_input("GitHub Token â†’ GHCR",   type="password",
-                                  placeholder="ghp_â€¦  (auto-loaded from secrets.toml if blank)",
+    github_token  = st.text_input("GitHub Token → GHCR",   type="password",
+                                  placeholder="ghp_…  (auto-loaded from secrets.toml if blank)",
                                   value=_gh_secret)
-    kaggle_raw    = st.text_input("Kaggle â†’ username:key", type="password", placeholder="user:key")
+    kaggle_raw    = st.text_input("Kaggle → username:key", type="password", placeholder="user:key")
     nexus_key     = st.text_input("Nexus Mods API Key",    type="password", placeholder="Your key")
 
     st.markdown('<div class="sb-label">JFrog Artifactory</div>', unsafe_allow_html=True)
@@ -6229,7 +6229,7 @@ with st.sidebar:
     nexus_repo_creds = st.text_input("user:password (optional)", type="password",
                                      placeholder="admin:password", key="nxs_creds")
 
-    # â”€â”€ Custom Rules / Blocklist (CSV or JSON) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # ── Custom Rules / Blocklist (CSV or JSON) ────────────────────────────────
     # Users upload their own pattern-based rules that deduct from each package's
     # Risk Score. Matching is shown inline in a new "Custom Flags" column.
     st.markdown('<div class="sb-label">Custom Rules / Blocklist</div>',
@@ -6242,7 +6242,7 @@ with st.sidebar:
         help="Columns: rule_id, name, field, match_type, pattern, severity, [emoji]"
     )
     # Reload only when the filename actually changes (Streamlit reruns happen
-    # on every interaction â€” without this guard we'd re-parse on each rerun)
+    # on every interaction — without this guard we'd re-parse on each rerun)
     if (_uploaded_rules is not None
             and st.session_state.get("custom_rules_filename") != _uploaded_rules.name):
         _new_rules, _new_warns = _load_custom_rules(_uploaded_rules)
@@ -6253,7 +6253,7 @@ with st.sidebar:
     _loaded_rules = st.session_state.get("custom_rules", [])
     if _loaded_rules:
         st.success(
-            f"âœ“ {len(_loaded_rules)} rule{'s' if len(_loaded_rules) > 1 else ''} "
+            f"✓ {len(_loaded_rules)} rule{'s' if len(_loaded_rules) > 1 else ''} "
             f"loaded from `{st.session_state.get('custom_rules_filename','file')}`"
         )
         with st.expander("Preview loaded rules", expanded=False):
@@ -6277,7 +6277,7 @@ kaggle_username, kaggle_key_val = "", ""
 if kaggle_raw and ":" in kaggle_raw:
     kaggle_username, kaggle_key_val = kaggle_raw.split(":",1)
 
-# â”€â”€ Hero â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ── Hero ───────────────────────────────────────────────────────────────────────
 # Dynamic registry count: TIER1 base + any optional adapters active this session
 _hero_reg_count = len(TIER1)
 if github_token:                       _hero_reg_count += 1
@@ -6299,7 +6299,7 @@ st.markdown(f"""
         </p>
       </div>
       <div class="hero-right">
-        <div class="live-badge"><span class="live-dot"></span> Live data Â· No stale index</div>
+        <div class="live-badge"><span class="live-dot"></span> Live data · No stale index</div>
         <div style="color:#2e6080;font-size:0.72rem;margin-top:0.3rem">OSV.dev CVE integration</div>
         <div style="color:#2e6080;font-size:0.72rem">Maintainer type detection</div>
       </div>
@@ -6315,19 +6315,19 @@ st.markdown(f"""
 </div>
 """, unsafe_allow_html=True)
 
-# â”€â”€ Scan form â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ── Scan form ──────────────────────────────────────────────────────────────────
 with st.form("scan_form"):
     q = st.text_area(
         "Query",
         placeholder=(
-            "Exact  â†’  rails   |   lodash   |   com.google.guava:guava   |   github.com/gin-gonic/gin\n"
-            "Search â†’  Google Guava   |   image recognition   |   machine learning"
+            "Exact  →  rails   |   lodash   |   com.google.guava:guava   |   github.com/gin-gonic/gin\n"
+            "Search →  Google Guava   |   image recognition   |   machine learning"
         ),
         height=88, label_visibility="collapsed")
     c1, c2, c3 = st.columns([4, 1.5, 1.5])
-    with c1: scan_btn         = st.form_submit_button("ðŸ”  Run Security Scan",    use_container_width=True)
-    with c2: clear_btn        = st.form_submit_button("ðŸ—‘  Clear Cache",          use_container_width=True)
-    with c3: clear_country_btn = st.form_submit_button("ðŸ—º  Clear Country Cache", use_container_width=True)
+    with c1: scan_btn         = st.form_submit_button("🔍  Run Security Scan",    use_container_width=True)
+    with c2: clear_btn        = st.form_submit_button("🗑  Clear Cache",          use_container_width=True)
+    with c3: clear_country_btn = st.form_submit_button("🗺  Clear Country Cache", use_container_width=True)
 
 if clear_btn:
     cache_clear()
@@ -6343,21 +6343,21 @@ if clear_btn:
             _f.unlink()
     except Exception:
         pass
-    st.success("Cache cleared â€” next scan fetches live data.")
+    st.success("Cache cleared — next scan fetches live data.")
 
 if clear_country_btn:
     country_cache_clear()
     st.session_state.pop("country_df", None)
     _fetch_github_country.clear()
     _country_via_repo_search.clear()
-    st.success("Country cache cleared â€” re-open Supply Chain tab to re-resolve all countries with the latest logic.")
+    st.success("Country cache cleared — re-open Supply Chain tab to re-resolve all countries with the latest logic.")
 
-# â”€â”€ Run scan (persists results so dropdown reruns still show data) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ── Run scan (persists results so dropdown reruns still show data) ──────────────
 if scan_btn and q.strip():
     targets  = [t.strip() for t in q.replace("\n",",").split(",") if t.strip()]
     _tmp_data, _tmp_errs = [], []
 
-    # Compute live adapter count â€” TIER1 base + any token-gated registries active now
+    # Compute live adapter count — TIER1 base + any token-gated registries active now
     _n_adapters = len(TIER1)
     if github_token:                            _n_adapters += 1  # GHCR
     if kaggle_username and kaggle_key_val:      _n_adapters += 1  # Kaggle
@@ -6367,17 +6367,17 @@ if scan_btn and q.strip():
     _q_label = "1 query" if len(targets) == 1 else f"{len(targets)} queries"
 
     with st.status(
-        f"Scanning {_q_label} across {_n_adapters} registriesâ€¦", expanded=True):
+        f"Scanning {_q_label} across {_n_adapters} registries…", expanded=True):
         # Show queue first so user sees all queries that will run in parallel
         for t in targets:
             mode = "Search" if _is_search(t) else "Exact"
-            st.write(f"`{mode}` â†’ `{t}`")
+            st.write(f"`{mode}` → `{t}`")
 
-        # â”€â”€ Parallel outer loop â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        # ── Parallel outer loop ────────────────────────────────────────────
         # Each library still has its own inner 16-thread adapter pool, so this
         # outer pool stays conservative (4 concurrent libraries) to avoid
-        # hammering rate-limited registries (npm, GitHub) with 16Ã—4=64 parallel
-        # requests per registry. 4Ã— concurrency on 30 libraries = ~5Ã— speedup.
+        # hammering rate-limited registries (npm, GitHub) with 16×4=64 parallel
+        # requests per registry. 4× concurrency on 30 libraries = ~5× speedup.
         def _scan_one(t):
             return run_audit(
                 t,
@@ -6404,15 +6404,15 @@ if scan_btn and q.strip():
     st.session_state["scan_data"]   = _tmp_data
     st.session_state["scan_errors"] = _tmp_errs
     st.session_state["scan_query"]  = q
-    st.session_state.pop("profile_cache", None)   # new scan â†’ invalidate profile cache
-    st.session_state.pop("country_df",    None)   # new scan â†’ re-fetch country data
-    _GH_SEARCH_CACHE.clear()                       # new scan â†’ re-search GitHub for all pkgs
+    st.session_state.pop("profile_cache", None)   # new scan → invalidate profile cache
+    st.session_state.pop("country_df",    None)   # new scan → re-fetch country data
+    _GH_SEARCH_CACHE.clear()                       # new scan → re-search GitHub for all pkgs
     st.rerun()
 
 elif scan_btn:
     st.warning("Enter a package name or search term above.")
 
-# â”€â”€ Results (rendered from session_state â€” survives every dropdown rerun) â”€â”€â”€â”€â”€â”€â”€
+# ── Results (rendered from session_state — survives every dropdown rerun) ───────
 if "scan_data" in st.session_state:
     all_data   = st.session_state["scan_data"]
     all_errors = st.session_state.get("scan_errors", [])
@@ -6441,7 +6441,7 @@ if "scan_data" in st.session_state:
         _HIDDEN_COLS = ["_gh_owner"]
         for _c in _COLS:
             if _c not in df.columns:
-                df[_c] = "â€”"
+                df[_c] = "—"
         df = df[_COLS + [c for c in _HIDDEN_COLS if c in df.columns]]
 
         total = len(df)
@@ -6452,7 +6452,7 @@ if "scan_data" in st.session_state:
         vuln      = len(vuln_rows)
         secure    = df["CVEs"].eq("None").sum()
 
-        # â”€â”€ KPI strip (always visible above tabs) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        # ── KPI strip (always visible above tabs) ─────────────────────────────
         st.markdown("---")
         k1,k2,k3,k4 = st.columns(4)
         k1.metric("Packages Found",  total)
@@ -6461,16 +6461,16 @@ if "scan_data" in st.session_state:
         k4.metric("User Maintained", int(users))
         st.markdown("")
 
-        # â”€â”€ Tabs â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        # ── Tabs ──────────────────────────────────────────────────────────────
         tab_scan, tab_geo, tab_profile = st.tabs(
-            ["ðŸ“¦  Scan Results", "ðŸŒ  Supply Chain Risk", "ðŸ‘¤  Maintainer Profile"]
+            ["📦  Scan Results", "🌍  Supply Chain Risk", "👤  Maintainer Profile"]
         )
 
-        # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
-        # TAB 1 â€” Scan Results
-        # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+        # ════════════════════════════════════════════════════════════════════
+        # TAB 1 — Scan Results
+        # ════════════════════════════════════════════════════════════════════
         with tab_scan:
-            # â”€â”€ Vulnerability Detail card REMOVED per user request â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+            # ── Vulnerability Detail card REMOVED per user request ────────────
             # The CVE data is still computed (vuln, vuln_rows, secure) and stays
             # in the main results table's "CVEs" column + the Risk Dashboard's
             # CVE count + the Vulnerability Report CSV export. Just the
@@ -6481,19 +6481,19 @@ if "scan_data" in st.session_state:
                    st.session_state.get("scan_query","").replace("\n",",").split(",")
                    if t.strip()]
             if any(_is_search(t) for t in _sq):
-                st.info("**Search mode** â€” showing the best match per registry. "
-                        "Re-scan with the exact ID for full CVE data.", icon="â„¹ï¸")
-            elif df["CVEs"].eq("â€”").all():
+                st.info("**Search mode** — showing the best match per registry. "
+                        "Re-scan with the exact ID for full CVE data.", icon="ℹ️")
+            elif df["CVEs"].eq("—").all():
                 st.info("CVE auditing covers PyPI, NPM, RubyGems, Crates.io, "
-                        "Packagist, Maven, NuGet and Go.", icon="â„¹ï¸")
+                        "Packagist, Maven, NuGet and Go.", icon="ℹ️")
 
             st.markdown(
-                f'<div class="sec-label">Results &nbsp;Â·&nbsp;'
+                f'<div class="sec-label">Results &nbsp;·&nbsp;'
                 f'<span style="color:#06b6d4;font-family:\'JetBrains Mono\',monospace">'
                 f' {total} packages across {regs} registries</span></div>',
                 unsafe_allow_html=True)
 
-            # â”€â”€ Abandoned Package Detection â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+            # ── Abandoned Package Detection ───────────────────────────────
             # Add Status column based on Last Updated date.
             # Drop internal-only columns from the display copy (they stay on
             # `df` so country enrichment can still use _gh_owner).
@@ -6507,14 +6507,14 @@ if "scan_data" in st.session_state:
                 disp_df["Last Updated"].apply(_pkg_status)
             )
 
-            # â”€â”€ Phase 2 Risk Suite â€” compute all 6 new checks â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+            # ── Phase 2 Risk Suite — compute all 6 new checks ────────────────
             disp_df["License Risk"] = disp_df["License"].apply(_license_risk)
             disp_df["Single Maintainer"] = disp_df.apply(
                 lambda r: _single_maintainer_risk(r.get("Maintainer",""),
                                                   r.get("Downloads","")),
                 axis=1
             )
-            # â”€â”€ Custom Rules / Blocklist (Phase 2 user-uploaded blocklist) â”€â”€â”€
+            # ── Custom Rules / Blocklist (Phase 2 user-uploaded blocklist) ───
             # If rules have been uploaded via sidebar, compute the Custom Flags
             # column (which rules each package matched) BEFORE Risk Score so
             # the penalty is reflected in the band.
@@ -6525,7 +6525,7 @@ if "scan_data" in st.session_state:
                     axis=1
                 )
 
-            # Risk Score (composite 0-100) â€” Country tier will improve it once
+            # Risk Score (composite 0-100) — Country tier will improve it once
             # the user clicks "Load Maintainer Countries" (rerun adds Country col).
             # Custom rules (if any) deduct from the score via the `rules` param.
             disp_df["Risk Score"]   = disp_df.apply(
@@ -6533,9 +6533,9 @@ if "scan_data" in st.session_state:
             )
             disp_df["Risk"]         = disp_df["Risk Score"].apply(_risk_band)
 
-            # â”€â”€ Risk Dashboard â€” summary metrics at the top â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+            # ── Risk Dashboard — summary metrics at the top ──────────────────
             st.markdown(
-                '<div class="sec-label">ðŸ›¡ï¸ Risk Dashboard</div>',
+                '<div class="sec-label">🛡️ Risk Dashboard</div>',
                 unsafe_allow_html=True
             )
             _dc1, _dc2, _dc3, _dc4 = st.columns(4)
@@ -6548,17 +6548,17 @@ if "scan_data" in st.session_state:
             _dc3.metric("High Risk",     f"{_high}",  f"{_high/len(disp_df)*100:.0f}%")
             _dc4.metric("Critical Risk", f"{_crit}",  f"{_crit/len(disp_df)*100:.0f}%")
 
-            # Secondary metric row â€” license + maintainer signals
+            # Secondary metric row — license + maintainer signals
             _dc5, _dc6, _dc7 = st.columns(3)
-            _safe_lic    = (disp_df["License Risk"] == "âœ… Safe").sum()
-            _no_lic      = (disp_df["License Risk"] == "âŒ Missing").sum()
+            _safe_lic    = (disp_df["License Risk"] == "✅ Safe").sum()
+            _no_lic      = (disp_df["License Risk"] == "❌ Missing").sum()
             _bus_factor  = (disp_df["Single Maintainer"].str.contains("Bus Factor", na=False)).sum()
-            _dc5.metric("âœ… Safe Licenses", f"{_safe_lic}")
-            _dc6.metric("âŒ Missing License", f"{_no_lic}")
-            _dc7.metric("âš ï¸ Bus Factor", f"{_bus_factor}",
-                        help="Single maintainer + 1M+ downloads â€” left-pad style risk")
+            _dc5.metric("✅ Safe Licenses", f"{_safe_lic}")
+            _dc6.metric("❌ Missing License", f"{_no_lic}")
+            _dc7.metric("⚠️ Bus Factor", f"{_bus_factor}",
+                        help="Single maintainer + 1M+ downloads — left-pad style risk")
 
-            # Tertiary row â€” custom-rule metrics (only when rules are loaded)
+            # Tertiary row — custom-rule metrics (only when rules are loaded)
             if _active_rules:
                 _dc9, _dc10 = st.columns(2)
                 _flagged = (disp_df["Custom Flags"].astype(str).str.len() > 0).sum()
@@ -6567,9 +6567,9 @@ if "scan_data" in st.session_state:
                     if any(m["severity"] == "critical"
                            for m in _custom_rule_match(_r, _active_rules))
                 )
-                _dc9.metric("ðŸŽ¯ Rules Triggered", f"{int(_flagged)}",
+                _dc9.metric("🎯 Rules Triggered", f"{int(_flagged)}",
                             help="Packages matching at least one custom rule")
-                _dc10.metric("ðŸš¨ Critical Rule Hits", f"{int(_crit_flagged)}",
+                _dc10.metric("🚨 Critical Rule Hits", f"{int(_crit_flagged)}",
                              help="Packages matching at least one critical-severity rule")
 
             # Top 5 riskiest packages
@@ -6577,39 +6577,39 @@ if "scan_data" in st.session_state:
                 _riskiest = disp_df.nsmallest(5, "Risk Score")[
                     ["Library","Registry","Risk","Status","License Risk"]
                 ].copy()
-                with st.expander(f"ðŸ”¥ Top {len(_riskiest)} riskiest packages", expanded=False):
+                with st.expander(f"🔥 Top {len(_riskiest)} riskiest packages", expanded=False):
                     st.dataframe(_riskiest, use_container_width=True, hide_index=True)
 
             st.markdown("---")
 
             # Count by status
-            _abandoned = (disp_df["Status"] == "ðŸš¨ Abandoned").sum()
-            _aging     = (disp_df["Status"] == "âš ï¸ Aging").sum()
-            _active    = (disp_df["Status"] == "âœ… Active").sum()
-            _unknown   = (disp_df["Status"] == "â“ Unknown").sum()
+            _abandoned = (disp_df["Status"] == "🚨 Abandoned").sum()
+            _aging     = (disp_df["Status"] == "⚠️ Aging").sum()
+            _active    = (disp_df["Status"] == "✅ Active").sum()
+            _unknown   = (disp_df["Status"] == "❓ Unknown").sum()
 
             # Show warning banners
             if _abandoned > 0:
                 st.error(
-                    f"ðŸš¨ **{_abandoned} abandoned package{'s' if _abandoned > 1 else ''}** "
-                    f"found â€” no updates in 2+ years. Consider finding alternatives.",
-                    icon="ðŸš¨"
+                    f"🚨 **{_abandoned} abandoned package{'s' if _abandoned > 1 else ''}** "
+                    f"found — no updates in 2+ years. Consider finding alternatives.",
+                    icon="🚨"
                 )
             if _aging > 0:
                 st.warning(
-                    f"âš ï¸ **{_aging} aging package{'s' if _aging > 1 else ''}** "
-                    f"found â€” last updated between 6 months and 2 years ago.",
-                    icon="âš ï¸"
+                    f"⚠️ **{_aging} aging package{'s' if _aging > 1 else ''}** "
+                    f"found — last updated between 6 months and 2 years ago.",
+                    icon="⚠️"
                 )
 
             # Status filter
-            _status_options = ["All", "âœ… Active", "âš ï¸ Aging", "ðŸš¨ Abandoned", "â“ Unknown"]
+            _status_options = ["All", "✅ Active", "⚠️ Aging", "🚨 Abandoned", "❓ Unknown"]
             _status_counts  = {
                 "All":           len(disp_df),
-                "âœ… Active":     _active,
-                "âš ï¸ Aging":      _aging,
-                "ðŸš¨ Abandoned":  _abandoned,
-                "â“ Unknown":    _unknown,
+                "✅ Active":     _active,
+                "⚠️ Aging":      _aging,
+                "🚨 Abandoned":  _abandoned,
+                "❓ Unknown":    _unknown,
             }
             _sf1, _sf2 = st.columns([2, 3])
             _status_filter = _sf1.selectbox(
@@ -6644,12 +6644,12 @@ if "scan_data" in st.session_state:
                     "Last Updated": st.column_config.TextColumn("Last Updated", width="small"),
                     "Description":  st.column_config.TextColumn("Description",  width="large"),
                     "Repo":         st.column_config.LinkColumn("Source",
-                                        display_text="Open â†—", width="small"),
+                                        display_text="Open ↗", width="small"),
                 })
 
-            # â”€â”€ Country Intelligence Check â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+            # ── Country Intelligence Check ────────────────────────────────
             st.markdown("---")
-            with st.expander("ðŸŒ Maintainer Country Intelligence", expanded=False):
+            with st.expander("🌍 Maintainer Country Intelligence", expanded=False):
                 st.caption(
                     "Fetch each maintainer's GitHub profile location and filter "
                     "results by country. Useful for supply-chain compliance, "
@@ -6657,35 +6657,35 @@ if "scan_data" in st.session_state:
                 )
                 _cc1, _cc2 = st.columns([1, 2])
                 _load_btn = _cc1.button(
-                    "ðŸŒ Load Maintainer Countries",
+                    "🌐 Load Maintainer Countries",
                     use_container_width=True,
                     help="Queries GitHub API for each unique maintainer username. "
                          "Results are cached for 2 hours."
                 )
                 if _load_btn or "country_df" in st.session_state:
                     if _load_btn:
-                        with st.spinner("Fetching maintainer locations from GitHubâ€¦"):
+                        with st.spinner("Fetching maintainer locations from GitHub…"):
                             st.session_state["country_df"] = _enrich_countries(
                                 df, github_token or ""
                             )
-                        st.success("Countries loaded!", icon="ðŸŒ")
+                        st.success("Countries loaded!", icon="🌍")
 
                     cdf = st.session_state.get("country_df")
                     if cdf is not None and "Country" in cdf.columns:
-                        # â”€â”€ Rate-limit warning â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-                        _rate_limited = (cdf["Country"] == "âš ï¸ Rate Limited").any()
+                        # ── Rate-limit warning ────────────────────────────────
+                        _rate_limited = (cdf["Country"] == "⚠️ Rate Limited").any()
                         if _rate_limited:
                             st.error(
-                                "**GitHub API rate limit reached** â€” unauthenticated requests "
+                                "**GitHub API rate limit reached** — unauthenticated requests "
                                 "are capped at 60/hour. Add a **GitHub Token** in the sidebar "
                                 "to raise the limit to 5,000/hour and get accurate results.",
-                                icon="ðŸš«"
+                                icon="🚫"
                             )
-                        # â”€â”€ Country filter multiselect â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+                        # ── Country filter multiselect ────────────────────────
                         all_countries = sorted(
                             [c for c in cdf["Country"].unique()
-                             if c and c != "âš ï¸ Rate Limited"],
-                            key=lambda x: (x == "Unknown", x == "ðŸŒ Remote / Global", x)
+                             if c and c != "⚠️ Rate Limited"],
+                            key=lambda x: (x == "Unknown", x == "🌐 Remote / Global", x)
                         )
                         country_display = {c: _fmt_country(c) for c in all_countries}
 
@@ -6693,18 +6693,18 @@ if "scan_data" in st.session_state:
                             "Filter by Country",
                             options=all_countries,
                             format_func=lambda c: country_display[c],
-                            placeholder="Select countries to includeâ€¦",
+                            placeholder="Select countries to include…",
                             help="Leave empty to show all countries."
                         )
 
-                        # â”€â”€ Unknown toggle â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+                        # ── Unknown toggle ────────────────────────────────────
                         _unk_count = int((cdf["Country"] == "Unknown").sum())
                         _inc_unknown = st.toggle(
-                            f"Always include â“ Unknown ({_unk_count} packages â€” "
+                            f"Always include ❓ Unknown ({_unk_count} packages — "
                             f"no traceable location)",
                             value=True,
                             help="Unknown means the maintainer's GitHub profile has no "
-                                 "location set. These are worth inspecting â€” a package "
+                                 "location set. These are worth inspecting — a package "
                                  "with no traceable maintainer origin is a supply-chain risk."
                         )
 
@@ -6715,9 +6715,9 @@ if "scan_data" in st.session_state:
                                 mask = mask | (cdf["Country"] == "Unknown")
                             filtered_cdf = cdf[mask]
                         else:
-                            filtered_cdf = cdf  # no filter â†’ show all
+                            filtered_cdf = cdf  # no filter → show all
 
-                        # â”€â”€ Country breakdown pill bar â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+                        # ── Country breakdown pill bar ────────────────────────
                         country_counts = cdf["Country"].value_counts()
                         pills_html = " ".join(
                             f'<span style="background:{"#1a0a0a" if c == "Unknown" else "#0a1e36"};'
@@ -6734,24 +6734,24 @@ if "scan_data" in st.session_state:
                             unsafe_allow_html=True
                         )
 
-                        # â”€â”€ Unknown-only warning â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+                        # ── Unknown-only warning ──────────────────────────────
                         if _unk_count > 0:
                             st.warning(
                                 f"**{_unk_count} package{'s' if _unk_count > 1 else ''}** "
                                 f"{'have' if _unk_count > 1 else 'has'} no traceable maintainer "
-                                f"location. Review these manually â€” an untraceable origin is a "
+                                f"location. Review these manually — an untraceable origin is a "
                                 f"supply-chain risk signal.",
-                                icon="âš ï¸"
+                                icon="⚠️"
                             )
 
-                        # â”€â”€ Filtered table label â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+                        # ── Filtered table label ──────────────────────────────
                         if selected:
                             _label_countries = ", ".join(_fmt_country(c) for c in selected)
-                            _label_unk = " + â“ Unknown" if _inc_unknown and _unk_count else ""
+                            _label_unk = " + ❓ Unknown" if _inc_unknown and _unk_count else ""
                             st.markdown(
-                                f'<div class="sec-label">Filtered Results &nbsp;Â·&nbsp;'
+                                f'<div class="sec-label">Filtered Results &nbsp;·&nbsp;'
                                 f'<span style="color:#06b6d4">'
-                                f'{len(filtered_cdf)} packages â€” '
+                                f'{len(filtered_cdf)} packages — '
                                 f'{_label_countries}{_label_unk}'
                                 f'</span></div>',
                                 unsafe_allow_html=True
@@ -6759,7 +6759,7 @@ if "scan_data" in st.session_state:
                         else:
                             st.markdown(
                                 f'<div class="sec-label">All Results with Countries'
-                                f'&nbsp;Â·&nbsp;<span style="color:#94a3b8">'
+                                f'&nbsp;·&nbsp;<span style="color:#94a3b8">'
                                 f'{len(filtered_cdf)} packages</span></div>',
                                 unsafe_allow_html=True
                             )
@@ -6785,7 +6785,7 @@ if "scan_data" in st.session_state:
                             "CVEs":      st.column_config.TextColumn("CVEs",       width="medium"),
                             "License":   st.column_config.TextColumn("License",    width="small"),
                             "Repo":      st.column_config.LinkColumn(
-                                             "Source", display_text="Open â†—", width="small"),
+                                             "Source", display_text="Open ↗", width="small"),
                         }
                         st.dataframe(
                             disp_cdf, use_container_width=True, hide_index=True,
@@ -6793,27 +6793,27 @@ if "scan_data" in st.session_state:
                             column_config=_col_cfg
                         )
 
-                        # â”€â”€ Export filtered results â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+                        # ── Export filtered results ───────────────────────────
                         _fe1, _fe2 = st.columns(2)
                         _fe1.download_button(
-                            "â¬‡ Export Filtered CSV",
+                            "⬇ Export Filtered CSV",
                             filtered_cdf.to_csv(index=False),
                             "maintainers_by_country.csv", "text/csv",
                             use_container_width=True
                         )
                         _fe2.download_button(
-                            "â¬‡ Export Filtered JSON",
+                            "⬇ Export Filtered JSON",
                             _clean_for_json_export(filtered_cdf),
                             "maintainers_by_country.json", "application/json",
                             use_container_width=True
                         )
 
-            # â”€â”€ Standard exports â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+            # ── Standard exports ──────────────────────────────────────────────
             # Build a single enriched frame that merges package data with
             # country intelligence (if already resolved in Tab 2).
             st.markdown("---")
 
-            # Merge country data when available â€” keyed on Library + Registry
+            # Merge country data when available — keyed on Library + Registry
             _export_base = disp_df.copy()
             _geo_cached  = st.session_state.get("country_df")
             if _geo_cached is not None and "Country" in _geo_cached.columns:
@@ -6833,7 +6833,7 @@ if "scan_data" in st.session_state:
                     if _cc in _export_base.columns:
                         _export_base[_cc] = _export_base[_cc].fillna("Unknown")
 
-            # â”€â”€ CSV export: fixed logical column order â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+            # ── CSV export: fixed logical column order ──────────────────────
             _csv_col_order = [
                 # Identity
                 "Library", "Registry", "Version",
@@ -6855,7 +6855,7 @@ if "scan_data" in st.session_state:
             _csv_cols += [c for c in _export_base.columns if c not in _csv_cols]
             _csv_export = _export_base[_csv_cols]
 
-            # â”€â”€ JSON export: structured sections â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+            # ── JSON export: structured sections ───────────────────────────
             _strip_emoji_fn = lambda v: re.sub(r'^[^\x00-\x7F\s]+\s*', '', str(v)).strip() \
                                         if isinstance(v, str) else v
             _json_records = []
@@ -6898,40 +6898,40 @@ if "scan_data" in st.session_state:
             )
 
             e1, e2, e3 = st.columns(3)
-            e1.download_button("â¬‡ Export CSV",  _csv_export.to_csv(index=False),
+            e1.download_button("⬇ Export CSV",  _csv_export.to_csv(index=False),
                                "registry_scan.csv", "text/csv",
                                use_container_width=True)
-            e2.download_button("â¬‡ Export JSON", _json_str,
+            e2.download_button("⬇ Export JSON", _json_str,
                                "registry_scan.json", "application/json",
                                use_container_width=True)
             if not vuln_rows.empty:
-                e3.download_button("ðŸš¨ Vulnerability Report",
+                e3.download_button("🚨 Vulnerability Report",
                                    vuln_rows.to_csv(index=False),
                                    "vulnerabilities.csv", "text/csv",
                                    use_container_width=True)
 
-        # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
-        # TAB 2 â€” Supply Chain Risk Analysis (basic version)
-        # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+        # ════════════════════════════════════════════════════════════════════
+        # TAB 2 — Supply Chain Risk Analysis (basic version)
+        # ════════════════════════════════════════════════════════════════════
         with tab_geo:
             st.markdown(
-                '<div class="sec-label">ðŸŒ Supply Chain Risk Analysis</div>',
+                '<div class="sec-label">🌍 Supply Chain Risk Analysis</div>',
                 unsafe_allow_html=True
             )
             st.caption(
                 "Automatic risk assessment based on the geographic origin of each "
                 "package's maintainer / upstream organisation. The lookup runs "
-                "automatically â€” country data is resolved via the 5-layer pipeline "
-                "(GitHub repo metadata â†’ curated org map â†’ username variants â†’ repo search)."
+                "automatically — country data is resolved via the 5-layer pipeline "
+                "(GitHub repo metadata → curated org map → username variants → repo search)."
             )
 
-            # â”€â”€ AUTO-LOAD country data if not already cached in session â”€â”€â”€â”€â”€â”€
+            # ── AUTO-LOAD country data if not already cached in session ──────
             # When the user opens this tab, transparently run _enrich_countries
             # so they see results without having to manually click a button on
             # another tab first.
             _geo_df = st.session_state.get("country_df")
             if _geo_df is None or "Country" not in (_geo_df.columns if _geo_df is not None else []):
-                with st.spinner("Resolving maintainer countries for geopolitical analysisâ€¦"):
+                with st.spinner("Resolving maintainer countries for geopolitical analysis…"):
                     try:
                         st.session_state["country_df"] = _enrich_countries(
                             df, github_token or ""
@@ -6939,51 +6939,51 @@ if "scan_data" in st.session_state:
                         _geo_df = st.session_state["country_df"]
                     except Exception as _e:
                         st.error(f"Country resolution failed: {type(_e).__name__}: {_e}",
-                                 icon="ðŸš¨")
+                                 icon="🚨")
                         _geo_df = None
 
             # Optional: manual refresh button for re-running the lookup
             _refresh_col, _ = st.columns([1, 4])
-            if _refresh_col.button("ðŸ”„ Refresh country data", use_container_width=True,
+            if _refresh_col.button("🔄 Refresh country data", use_container_width=True,
                                    help="Re-runs the country resolution from scratch"):
-                with st.spinner("Re-fetching maintainer countriesâ€¦"):
+                with st.spinner("Re-fetching maintainer countries…"):
                     st.session_state["country_df"] = _enrich_countries(
                         df, github_token or ""
                     )
                     _geo_df = st.session_state["country_df"]
-                    st.success("Countries refreshed!", icon="ðŸŒ")
+                    st.success("Countries refreshed!", icon="🌍")
 
             if _geo_df is None or "Country" not in _geo_df.columns:
                 st.info(
                     "Country data could not be loaded. Make sure you have packages "
                     "in your scan results and that your GitHub token (if configured) "
                     "isn't rate-limited.",
-                    icon="â„¹ï¸"
+                    icon="ℹ️"
                 )
             else:
                 # Apply Country Tier classification to every row
                 _gdf = _geo_df.copy()
                 _gdf["Country Tier"] = _gdf["Country"].apply(_country_tier)
 
-                # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
-                # NEW SECTION â€” Per-Library Security Audit
+                # ═══════════════════════════════════════════════════════════════
+                # NEW SECTION — Per-Library Security Audit
                 # Runs all registered checks (_SECURITY_CHECKS) for every library
                 # and shows results as a per-row breakdown.
-                # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+                # ═══════════════════════════════════════════════════════════════
                 st.markdown(
-                    '<div class="sec-label">ðŸ” Per-Library Security Audit</div>',
+                    '<div class="sec-label">🔍 Per-Library Security Audit</div>',
                     unsafe_allow_html=True
                 )
                 st.caption(
                     f"Each library is evaluated against {len(_SECURITY_CHECKS)} "
                     "security checks. The overall severity is the **worst** "
-                    "result across all checks â€” a single Critical issue is "
+                    "result across all checks — a single Critical issue is "
                     "never masked by other passing checks."
                 )
 
                 # Run all checks for all rows (cached in session for re-renders)
                 _token = (github_token or "")
-                with st.spinner("Running security checksâ€¦"):
+                with st.spinner("Running security checks…"):
                     _audit_rows = []
                     for _, _row in _gdf.iterrows():
                         results  = _run_security_checks(_row, _token)
@@ -7002,7 +7002,7 @@ if "scan_data" in st.session_state:
                     # Build raised queries from all failed checks and persist across reruns
                     st.session_state["raised_queries"] = _build_raised_queries(_audit_rows)
 
-                # â”€â”€ Summary metrics across all libraries â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+                # ── Summary metrics across all libraries ──────────────────────
                 _audit_df_full = pd.DataFrame(_audit_rows)
                 _au_crit = (_audit_df_full["_agg_rank"] == 4).sum()
                 _au_high = (_audit_df_full["_agg_rank"] == 3).sum()
@@ -7010,7 +7010,7 @@ if "scan_data" in st.session_state:
                 _au_low  = (_audit_df_full["_agg_rank"] <= 1).sum()
                 _au_tot  = len(_audit_df_full)
 
-                # â”€â”€ Persist scan to PostgreSQL â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+                # ── Persist scan to PostgreSQL ────────────────────────────────
                 save_scan_history(
                     _audit_rows,
                     st.session_state.get("raised_queries", []),
@@ -7033,9 +7033,9 @@ if "scan_data" in st.session_state:
                 _ac4.metric("Low/Pass", f"{int(_au_low)}",
                             f"{_au_low/_au_tot*100:.0f}%" if _au_tot else "0%")
 
-                # â”€â”€ Severity filter â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+                # ── Severity filter ───────────────────────────────────────────
                 _sev_filter = st.selectbox(
-                    "Show packages with severity â‰¥",
+                    "Show packages with severity ≥",
                     options=["All", "Medium and above", "High and above",
                              "Critical only"],
                     index=0, key="audit_sev_filter"
@@ -7046,12 +7046,12 @@ if "scan_data" in st.session_state:
 
                 if _filtered_audit.empty:
                     st.success(
-                        f"âœ… No packages match the '{_sev_filter}' filter â€” "
+                        f"✅ No packages match the '{_sev_filter}' filter — "
                         "your dependencies are clean at this severity level.",
-                        icon="âœ…"
+                        icon="✅"
                     )
                 else:
-                    # â”€â”€ Per-library compact table â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+                    # ── Per-library compact table ─────────────────────────────
                     _table_cols = (["Library", "Registry"] +
                                    [c["name"] for c in _SECURITY_CHECKS] +
                                    ["Overall"])
@@ -7063,46 +7063,46 @@ if "scan_data" in st.session_state:
                         height=min(56 + 38 * len(_display_audit), 540)
                     )
 
-                    # â”€â”€ Drill-down: expandable detail per library â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-                    st.markdown("##### ðŸ”Ž Per-library details")
+                    # ── Drill-down: expandable detail per library ─────────────
+                    st.markdown("##### 🔎 Per-library details")
                     for _, audit_row in _filtered_audit.iterrows():
                         _agg_emoji = _SEV_EMOJI.get(
                             list(_SEV_RANK.keys())[
                                 list(_SEV_RANK.values()).index(int(audit_row["_agg_rank"]))
-                            ], "âšª")
+                            ], "⚪")
                         _label = (f"{_agg_emoji}  **{audit_row['Library']}** "
-                                  f"Â· {audit_row['Registry']} â†’ {audit_row['Overall']}")
+                                  f"· {audit_row['Registry']} → {audit_row['Overall']}")
                         with st.expander(_label, expanded=False):
                             for chk_meta, result in zip(_SECURITY_CHECKS,
                                                         audit_row["_results"]):
                                 st.markdown(
                                     f"**{_severity_badge(result['severity'])}** "
-                                    f"Â· **{chk_meta['name']}** â€” {result['label']}"
+                                    f"· **{chk_meta['name']}** — {result['label']}"
                                 )
                                 st.caption(f"_{result['details']}_")
 
-                # â”€â”€ Export the audit results â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+                # ── Export the audit results ──────────────────────────────────
                 _audit_export = _audit_df_full.drop(
                     columns=["_results", "_agg_rank"], errors="ignore"
                 )
                 _ae1, _ae2 = st.columns(2)
                 _ae1.download_button(
-                    "â¬‡ Export Security Audit (CSV)",
+                    "⬇ Export Security Audit (CSV)",
                     _audit_export.to_csv(index=False),
                     "security_audit.csv", "text/csv",
                     use_container_width=True, key="dl_audit_csv"
                 )
                 _ae2.download_button(
-                    "â¬‡ Export Security Audit (JSON)",
+                    "⬇ Export Security Audit (JSON)",
                     json.dumps(_build_supply_chain_json(_audit_rows),
                                indent=2, ensure_ascii=False),
                     "security_audit.json", "application/json",
                     use_container_width=True, key="dl_audit_json"
                 )
 
-                # â”€â”€ ðŸš¨ Raised Queries â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+                # ── 🚨 Raised Queries ─────────────────────────────────────────
                 st.markdown(
-                    '<div class="sec-label">ðŸš¨ Raised Queries</div>',
+                    '<div class="sec-label">🚨 Raised Queries</div>',
                     unsafe_allow_html=True,
                 )
                 st.caption(
@@ -7114,27 +7114,27 @@ if "scan_data" in st.session_state:
                 _rq = st.session_state.get("raised_queries", [])
                 if not _rq:
                     st.success(
-                        "âœ… No queries raised â€” all security checks passed.",
-                        icon="âœ…",
+                        "✅ No queries raised — all security checks passed.",
+                        icon="✅",
                     )
                 else:
                     st.error(
                         f"**{len(_rq)} package(s)** triggered failed checks "
                         "and have been raised as queries below.",
-                        icon="ðŸš¨",
+                        icon="🚨",
                     )
 
                     for _q in _rq:
                         _qs    = _q["overall_risk"].get("worst_check_severity") or _q["overall_risk"].get("severity", "pass")
-                        _qemj  = _SEV_EMOJI.get(_qs, "ðŸŸ¡")
+                        _qemj  = _SEV_EMOJI.get(_qs, "🟡")
                         _qlbl  = _SEV_LABEL.get(_qs, _qs.title())
                         _nfail = sum(1 for c in _q["checks"] if c["status"] != "pass")
                         _qttl  = (
                             f"{_qemj} **{_q['library']['name']}** "
-                            f"Â· {_q['library']['registry']} "
-                            f"â€” {_qlbl} "
+                            f"· {_q['library']['registry']} "
+                            f"— {_qlbl} "
                             f"({_nfail} check(s) failed) "
-                            f"Â· `{_q['query_id']}`"
+                            f"· `{_q['query_id']}`"
                         )
                         with st.expander(_qttl, expanded=False):
                             st.code(
@@ -7145,11 +7145,11 @@ if "scan_data" in st.session_state:
 
                 st.markdown("---")
 
-                # â”€â”€ Section 1: Risk Tier Breakdown â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+                # ── Section 1: Risk Tier Breakdown ────────────────────────────
                 _trusted    = (_gdf["Country Tier"] == "Trusted").sum()
                 _caution    = (_gdf["Country Tier"] == "Caution").sum()
                 _restricted = (_gdf["Country Tier"] == "Restricted").sum()
-                _unrated    = (_gdf["Country Tier"] == "â“ Unrated").sum()
+                _unrated    = (_gdf["Country Tier"] == "❓ Unrated").sum()
                 _total      = len(_gdf)
 
                 st.markdown("#### Risk Tier Breakdown")
@@ -7160,11 +7160,11 @@ if "scan_data" in st.session_state:
                            f"{_caution/_total*100:.0f}%" if _total else "0%")
                 _t3.metric("Restricted", f"{_restricted}",
                            f"{_restricted/_total*100:.0f}%" if _total else "0%")
-                _t4.metric("â“ Unrated",    f"{_unrated}",
+                _t4.metric("❓ Unrated",    f"{_unrated}",
                            f"{_unrated/_total*100:.0f}%" if _total else "0%")
 
-                # â”€â”€ Section 2: Geopolitical Risk Score â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-                # Simple formula: 100 - (restricted% Ã— 1.5) - (unrated% Ã— 0.5)
+                # ── Section 2: Geopolitical Risk Score ────────────────────────
+                # Simple formula: 100 - (restricted% × 1.5) - (unrated% × 0.5)
                 # Higher score = lower geopolitical risk
                 if _total:
                     _geo_score = max(0, int(100
@@ -7181,15 +7181,15 @@ if "scan_data" in st.session_state:
                 _g1, _g2 = st.columns([1, 2])
                 _g1.metric("Score", f"{_geo_score} / 100", _geo_band)
                 _g2.progress(_geo_score / 100,
-                             text=f"{_geo_band}  Â·  {_total} packages analysed")
+                             text=f"{_geo_band}  ·  {_total} packages analysed")
 
                 st.markdown("---")
 
-                # â”€â”€ Section 3: High-Risk Packages (Restricted-tier) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+                # ── Section 3: High-Risk Packages (Restricted-tier) ───────────
                 _restricted_rows = _gdf[_gdf["Country Tier"] == "Restricted"]
                 if not _restricted_rows.empty:
                     st.markdown(
-                        f"#### ðŸš¨ High-Risk Packages "
+                        f"#### 🚨 High-Risk Packages "
                         f"({len(_restricted_rows)} from restricted countries)"
                     )
                     st.error(
@@ -7197,7 +7197,7 @@ if "scan_data" in st.session_state:
                         "maintained from countries commonly flagged in compliance/sanctions "
                         "contexts (Russia, China, Iran, North Korea, Belarus, Cuba, Syria, "
                         "Venezuela, Myanmar). Review your organisation's policy before use.",
-                        icon="ðŸš¨"
+                        icon="🚨"
                     )
                     _rcols = ["Library","Registry","Country","Maintainer","Version","Last Updated"]
                     _rcols = [c for c in _rcols if c in _restricted_rows.columns]
@@ -7205,7 +7205,7 @@ if "scan_data" in st.session_state:
                                  use_container_width=True, hide_index=True)
                     st.markdown("---")
 
-                # â”€â”€ Section 4: Concentration Risk â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+                # ── Section 4: Concentration Risk ─────────────────────────────
                 _country_counts = (_gdf["Country"].value_counts())
                 if not _country_counts.empty:
                     _top_country     = _country_counts.index[0]
@@ -7216,10 +7216,10 @@ if "scan_data" in st.session_state:
                             f"dependencies ({int(_country_counts.iloc[0])}/{_total}) "
                             f"are maintained from **{_top_country}**. Single-country "
                             "concentration is a supply-chain risk.",
-                            icon="âš ï¸"
+                            icon="⚠️"
                         )
 
-                # â”€â”€ Section 5: Geographic Distribution chart â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+                # ── Section 5: Geographic Distribution chart ──────────────────
                 st.markdown("#### Geographic Distribution")
                 _dist_df = _country_counts.reset_index()
                 _dist_df.columns = ["Country", "Packages"]
@@ -7228,13 +7228,13 @@ if "scan_data" in st.session_state:
                 st.bar_chart(_dist_df.set_index("Country")["Packages"],
                              height=300, use_container_width=True)
 
-                # â”€â”€ Section 6: By-Country Drill-Down â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+                # ── Section 6: By-Country Drill-Down ──────────────────────────
                 st.markdown("#### By-Country Breakdown")
                 for _country in _dist_df["Country"]:
                     _country_rows = _gdf[_gdf["Country"] == _country]
                     _tier = _country_tier(_country)
                     with st.expander(
-                        f"{_tier}  Â·  {_country}  Â·  "
+                        f"{_tier}  ·  {_country}  ·  "
                         f"{len(_country_rows)} package{'s' if len(_country_rows) > 1 else ''}",
                         expanded=False
                     ):
@@ -7243,7 +7243,7 @@ if "scan_data" in st.session_state:
                         st.dataframe(_country_rows[_cols],
                                      use_container_width=True, hide_index=True)
 
-                # â”€â”€ Export â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+                # ── Export ────────────────────────────────────────────────────
                 st.markdown("---")
                 _geo_export = _gdf[[
                     c for c in ["Library","Registry","Maintainer","Country",
@@ -7252,24 +7252,24 @@ if "scan_data" in st.session_state:
                 ]].copy()
                 _ge1, _ge2 = st.columns(2)
                 _ge1.download_button(
-                    "â¬‡ Export Supply Chain Risk (CSV)",
+                    "⬇ Export Supply Chain Risk (CSV)",
                     _geo_export.to_csv(index=False),
                     "supply_chain_risk.csv", "text/csv",
                     use_container_width=True
                 )
                 _ge2.download_button(
-                    "â¬‡ Export Supply Chain Risk (JSON)",
+                    "⬇ Export Supply Chain Risk (JSON)",
                     _clean_for_json_export(_geo_export),
                     "supply_chain_risk.json", "application/json",
                     use_container_width=True
                 )
 
-        # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
-        # TAB 3 â€” Maintainer Profile
-        # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+        # ════════════════════════════════════════════════════════════════════
+        # TAB 3 — Maintainer Profile
+        # ════════════════════════════════════════════════════════════════════
         with tab_profile:
 
-            # â”€â”€ helper: build one stat pill (no 4-space indent = no markdown code-block) â”€â”€
+            # ── helper: build one stat pill (no 4-space indent = no markdown code-block) ──
             def _ov_pill(label, value, bg="#0a1e36", lc="#3d5a75",
                          vc="#94a3b8", vs=""):
                 return (
@@ -7296,30 +7296,30 @@ if "scan_data" in st.session_state:
                         return v
                 return "#06b6d4"
 
-            # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
-            # ALL-REGISTRIES OVERVIEW â€” one card per result row
-            # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+            # ══════════════════════════════════════════════════════════════
+            # ALL-REGISTRIES OVERVIEW — one card per result row
+            # ══════════════════════════════════════════════════════════════
             st.markdown(
-                f'<div class="sec-label">ðŸ“‹ All Registries â€” Package Overview'
+                f'<div class="sec-label">📋 All Registries — Package Overview'
                 f'<span style="color:#06b6d4;font-size:0.72rem;margin-left:0.6rem;'
                 f'font-weight:400">{len(df)} registr{"y" if len(df)==1 else "ies"}</span>'
                 f'</div>',
                 unsafe_allow_html=True)
 
             for _ri, (_ridx, _rrow) in enumerate(df.iterrows()):
-                _rv_lib  = str(_rrow.get("Library","â€”"))
-                _rv_reg  = str(_rrow.get("Registry","â€”"))
+                _rv_lib  = str(_rrow.get("Library","—"))
+                _rv_reg  = str(_rrow.get("Registry","—"))
                 _rv_ver  = str(_rrow.get("Version","N/A"))
-                _rv_lic  = str(_rrow.get("License","â€”"))
-                _rv_dl   = str(_rrow.get("Downloads","â€”"))
-                _rv_upd  = str(_rrow.get("Last Updated","â€”"))
-                _rv_desc = str(_rrow.get("Description","") or "â€”")
-                _rv_cves = str(_rrow.get("CVEs","") or "â€”")
-                _rv_mnt  = str(_rrow.get("Maintainer","â€”"))
+                _rv_lic  = str(_rrow.get("License","—"))
+                _rv_dl   = str(_rrow.get("Downloads","—"))
+                _rv_upd  = str(_rrow.get("Last Updated","—"))
+                _rv_desc = str(_rrow.get("Description","") or "—")
+                _rv_cves = str(_rrow.get("CVEs","") or "—")
+                _rv_mnt  = str(_rrow.get("Maintainer","—"))
                 _rv_repo = str(_rrow.get("Repo","") or "")
                 _rv_ac   = _reg_accent(_rv_reg)
 
-                _rv_cve_has = _rv_cves not in ("â€”","","None","N/A","nan")
+                _rv_cve_has = _rv_cves not in ("—","","None","N/A","nan")
                 _rv_cbg = "#7f1d1d" if _rv_cve_has else "#0a1e36"
                 _rv_cfc = "#fca5a5" if _rv_cve_has else "#4a6580"
                 _rv_clb = _rv_cves if _rv_cve_has else "None detected"
@@ -7327,9 +7327,9 @@ if "scan_data" in st.session_state:
                 _rv_repo_link = (
                     f'<a href="{_rv_repo}" target="_blank" '
                     f'style="color:{_rv_ac};text-decoration:none;font-size:0.73rem">'
-                    f'{_rv_repo[:55]}{"â€¦" if len(_rv_repo)>55 else ""} â†—</a>'
+                    f'{_rv_repo[:55]}{"…" if len(_rv_repo)>55 else ""} ↗</a>'
                     if _rv_repo else
-                    '<span style="color:#2e4a60;font-size:0.73rem">â€”</span>'
+                    '<span style="color:#2e4a60;font-size:0.73rem">—</span>'
                 )
 
                 _rv_pills = (
@@ -7372,12 +7372,12 @@ if "scan_data" in st.session_state:
                     unsafe_allow_html=True
                 )
 
-            # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
-            # EXPORT ALL MAINTAINERS â€” bulk download for all registries
-            # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+            # ══════════════════════════════════════════════════════════════
+            # EXPORT ALL MAINTAINERS — bulk download for all registries
+            # ══════════════════════════════════════════════════════════════
             if len(df) > 1:
                 with st.expander(
-                    f"â¬‡ Export All Maintainers  â€”  {len(df)} registr{'y' if len(df)==1 else 'ies'}",
+                    f"⬇ Export All Maintainers  —  {len(df)} registr{'y' if len(df)==1 else 'ies'}",
                     expanded=False
                 ):
                     st.markdown(
@@ -7390,7 +7390,7 @@ if "scan_data" in st.session_state:
                         unsafe_allow_html=True
                     )
 
-                    # â”€â”€ Build CSV â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+                    # ── Build CSV ─────────────────────────────────────────────
                     _csv_rows = []
                     for _, _r in df.iterrows():
                         _csv_rows.append({
@@ -7408,7 +7408,7 @@ if "scan_data" in st.session_state:
                     _csv_df  = pd.DataFrame(_csv_rows)
                     _csv_str = _csv_df.to_csv(index=False)
 
-                    # â”€â”€ Build JSON (scan data + any cached GitHub intel) â”€â”€â”€â”€â”€â”€â”€
+                    # ── Build JSON (scan data + any cached GitHub intel) ───────
                     _all_export = []
                     _pcache_all = st.session_state.get("profile_cache", {})
                     for _, _r in df.iterrows():
@@ -7484,15 +7484,15 @@ if "scan_data" in st.session_state:
 
                     _ec1, _ec2 = st.columns(2)
                     _ec1.download_button(
-                        "â¬‡ CSV â€” All Maintainers",
+                        "⬇ CSV — All Maintainers",
                         _csv_str,
                         f"maintainers_all_{_scan_slug}.csv",
                         "text/csv",
                         use_container_width=True,
-                        help="Registry Â· Library Â· Version Â· Maintainer Â· CVEs Â· License Â· Downloads â€” one row per registry",
+                        help="Registry · Library · Version · Maintainer · CVEs · License · Downloads — one row per registry",
                     )
                     _ec2.download_button(
-                        "â¬‡ JSON â€” Enriched Profiles",
+                        "⬇ JSON — Enriched Profiles",
                         _json_str,
                         f"maintainers_all_{_scan_slug}.json",
                         "application/json",
@@ -7512,12 +7512,12 @@ if "scan_data" in st.session_state:
                         height=min(56 + 38 * len(_csv_df), 320),
                     )
 
-            # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
-            # DEEP DIVE â€” detailed GitHub / CVE intelligence for one registry
-            # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+            # ══════════════════════════════════════════════════════════════
+            # DEEP DIVE — detailed GitHub / CVE intelligence for one registry
+            # ══════════════════════════════════════════════════════════════
             st.markdown("---")
             st.markdown(
-                '<div class="sec-label">ðŸ”¬ Deep Dive â€” Security Intelligence</div>',
+                '<div class="sec-label">🔬 Deep Dive — Security Intelligence</div>',
                 unsafe_allow_html=True)
             st.markdown(
                 '<div style="color:#4a6580;font-size:0.78rem;margin-bottom:0.6rem">'
@@ -7526,9 +7526,9 @@ if "scan_data" in st.session_state:
                 '</div>',
                 unsafe_allow_html=True)
 
-            # Selectbox â€” one entry per registry row
+            # Selectbox — one entry per registry row
             _dd_options = [
-                f"ðŸ“¦  {row['Registry']:20s}  Â·  {row['Library']}"
+                f"📦  {row['Registry']:20s}  ·  {row['Library']}"
                 for _, row in df.iterrows()
             ]
             selected_idx = st.selectbox(
@@ -7543,7 +7543,7 @@ if "scan_data" in st.session_state:
             gh_path  = _repo_url_to_gh(repo_url)
             handle, is_org = _resolve_gh_handle(sel["Maintainer"], repo_url)
 
-            # â”€â”€ Profile cache: session (instant) â†’ JSON (persistent) â†’ API â”€â”€â”€â”€â”€
+            # ── Profile cache: session (instant) → JSON (persistent) → API ─────
             _pkey   = f"{pkg_name}::{reg_name}"
             _pcache = st.session_state.get("profile_cache", {}).get(_pkey)
 
@@ -7552,7 +7552,7 @@ if "scan_data" in st.session_state:
 
             # Force-refresh button (clears JSON + session cache for this pkg)
             _refresh_key = f"refresh_{_pkey}"
-            if st.button("ðŸ”„ Refresh data", key=_refresh_key, help="Force re-fetch fresh data from all APIs"):
+            if st.button("🔄 Refresh data", key=_refresh_key, help="Force re-fetch fresh data from all APIs"):
                 _delete_json_cache(pkg_name, reg_name)
                 st.session_state.get("profile_cache", {}).pop(_pkey, None)
                 _pcache = None
@@ -7565,7 +7565,7 @@ if "scan_data" in st.session_state:
                     _pcache = None
 
             if _pcache:
-                # Layer 1 â€” session_state: instant, no I/O
+                # Layer 1 — session_state: instant, no I/O
                 rate_limited      = _pcache["rate_limited"]
                 gh_path           = _pcache.get("gh_path", gh_path)
                 handle            = _pcache.get("handle",  handle)
@@ -7580,7 +7580,7 @@ if "scan_data" in st.session_state:
                 contrib_intel     = _pcache.get("contrib_intel", [])
                 openssf           = _pcache.get("openssf")
             else:
-                # Layer 2 â€” JSON cache: load once from disk, check TTL per field
+                # Layer 2 — JSON cache: load once from disk, check TTL per field
                 _jc = _load_json_cache(pkg_name, reg_name)
 
                 tok          = github_token or None
@@ -7621,12 +7621,12 @@ if "scan_data" in st.session_state:
                              not _ossf_fresh or not _gh_path_fresh)
 
                 if _need_api:
-                    with st.spinner(f"Fetching fresh data for **{pkg_name}** on **{reg_name}**â€¦"):
+                    with st.spinner(f"Fetching fresh data for **{pkg_name}** on **{reg_name}**…"):
 
-                        # No pre-check call â€” detect rate limit inline from 403 responses
+                        # No pre-check call — detect rate limit inline from 403 responses
                         # (saves one precious unauthenticated API call)
                         if True:
-                            # â”€â”€ Repo discovery (gh_path) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+                            # ── Repo discovery (gh_path) ──────────────────────
                             if not _gh_path_fresh:
                                 _found = _gh_search_repo(pkg_name, tok)
                                 if _found:
@@ -7636,7 +7636,7 @@ if "scan_data" in st.session_state:
                                     _jcache_set(_jc, "gh_path", gh_path)
                                     _jcache_set(_jc, "handle",  handle)
 
-                            # â”€â”€ A. Repo info + commits â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+                            # ── A. Repo info + commits ─────────────────────────
                             if gh_path and not _repo_info_fresh:
                                 repo_info = gh_repo_info(gh_path, tok)
                                 if isinstance(repo_info, dict) and repo_info.get("_rate_limited"):
@@ -7651,13 +7651,13 @@ if "scan_data" in st.session_state:
                                 _jcache_set(_jc, "repo_cmts",        repo_cmts)
                                 _jcache_set(_jc, "last_commit_date", last_commit_date)
 
-                        # â”€â”€ B. Registry maintainers (no GitHub token needed) â”€â”€
+                        # ── B. Registry maintainers (no GitHub token needed) ──
                         if not _raw_m_fresh:
                             raw_maintainers = fetch_pkg_maintainers(pkg_name, reg_name)
                             _jcache_set(_jc, "raw_maintainers", raw_maintainers)
 
                         if not rate_limited:
-                            # â”€â”€ C. Owner/org profile â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+                            # ── C. Owner/org profile ──────────────────────────
                             if handle and not _owner_prof_fresh:
                                 owner_prof = gh_profile(handle, is_org, tok)
                                 if isinstance(owner_prof, dict) and owner_prof.get("_rate_limited"):
@@ -7665,13 +7665,13 @@ if "scan_data" in st.session_state:
                                 elif owner_prof:
                                     is_org = (owner_prof.get("_etype") == "orgs")
                                     _jcache_set(_jc, "owner_prof", owner_prof)
-                                    # owner_repos = extra call â€” only fetch with a token
+                                    # owner_repos = extra call — only fetch with a token
                                     if tok and not _owner_repos_fresh:
                                         owner_repos = gh_repos(handle, is_org, tok)
                                         _jcache_set(_jc, "owner_repos", owner_repos)
 
-                            # â”€â”€ D. Individual maintainer GitHub profiles â”€â”€â”€â”€â”€â”€â”€
-                            # Skip without a token â€” saves up to 8 API calls
+                            # ── D. Individual maintainer GitHub profiles ───────
+                            # Skip without a token — saves up to 8 API calls
                             if tok and not _mgh_fresh:
                                 for m in raw_maintainers["maintainers"][:8]:
                                     uname = m.get("name","").strip()
@@ -7681,7 +7681,7 @@ if "scan_data" in st.session_state:
                                         maint_gh_profiles[uname] = p
                                 _jcache_set(_jc, "maint_gh_profiles", maint_gh_profiles)
 
-                            # â”€â”€ E. Contributor security intelligence â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+                            # ── E. Contributor security intelligence ───────────
                             # Only auto-fetch if already cached (JSON hit).
                             # First-time load is triggered by a button in the UI
                             # to avoid spending 25 API calls on initial page open.
@@ -7690,7 +7690,7 @@ if "scan_data" in st.session_state:
                                     gh_path, tok, n=5, reg_name=reg_name)
                                 _jcache_set(_jc, "contrib_intel", contrib_intel)
 
-                        # â”€â”€ F. OpenSSF Scorecard (no token needed) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+                        # ── F. OpenSSF Scorecard (no token needed) ────────────
                         if gh_path and not _ossf_fresh:
                             openssf = _openssf_scorecard(gh_path)
                             _jcache_set(_jc, "openssf", openssf)
@@ -7699,8 +7699,8 @@ if "scan_data" in st.session_state:
                     # Persist updated cache to disk
                     _save_json_cache(pkg_name, reg_name, _jc)
 
-                # Layer 3 â€” save to session_state for instant recall this session
-                # Never cache rate_limited=True â€” next visit should retry GitHub
+                # Layer 3 — save to session_state for instant recall this session
+                # Never cache rate_limited=True — next visit should retry GitHub
                 st.session_state.setdefault("profile_cache", {})[_pkey] = {
                     "rate_limited":      False,
                     "gh_path":           gh_path,
@@ -7718,20 +7718,20 @@ if "scan_data" in st.session_state:
                 }
 
             all_cmts   = repo_cmts
-            lc_display = last_commit_date or (all_cmts[0]["date"] if all_cmts else "â€”")
+            lc_display = last_commit_date or (all_cmts[0]["date"] if all_cmts else "—")
 
-            # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
-            # SECTION 0 â€” Package Overview  (always visible, from scan data)
-            # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
-            _ov_name     = sel.get("Library",    "â€”")
-            _ov_reg      = sel.get("Registry",   "â€”")
+            # ══════════════════════════════════════════════════════════════
+            # SECTION 0 — Package Overview  (always visible, from scan data)
+            # ══════════════════════════════════════════════════════════════
+            _ov_name     = sel.get("Library",    "—")
+            _ov_reg      = sel.get("Registry",   "—")
             _ov_ver      = sel.get("Version",    "N/A")
-            _ov_lic      = sel.get("License",    "â€”")
-            _ov_dl       = sel.get("Downloads",  "â€”")
-            _ov_desc     = sel.get("Description","â€”") or "â€”"
-            _ov_cves     = sel.get("CVEs",       "â€”")
-            _ov_upd      = sel.get("Last Updated","â€”")
-            _ov_maint    = sel.get("Maintainer", "â€”")
+            _ov_lic      = sel.get("License",    "—")
+            _ov_dl       = sel.get("Downloads",  "—")
+            _ov_desc     = sel.get("Description","—") or "—"
+            _ov_cves     = sel.get("CVEs",       "—")
+            _ov_upd      = sel.get("Last Updated","—")
+            _ov_maint    = sel.get("Maintainer", "—")
             _ov_repo     = sel.get("Repo",       "")
 
             # Derive a registry colour accent
@@ -7750,7 +7750,7 @@ if "scan_data" in st.session_state:
                     break
 
             # CVE badge colour
-            _cve_has = _ov_cves not in ("â€”", "", None, "N/A") and _ov_cves
+            _cve_has = _ov_cves not in ("—", "", None, "N/A") and _ov_cves
             _cve_badge_bg  = "#7f1d1d" if _cve_has else "#0a1e36"
             _cve_badge_col = "#fca5a5" if _cve_has else "#4a6580"
             _cve_label     = _ov_cves if _cve_has else "None detected"
@@ -7758,12 +7758,12 @@ if "scan_data" in st.session_state:
             _ov_repo_link = (
                 f'<a href="{_ov_repo}" target="_blank" '
                 f'style="color:{_ov_accent};text-decoration:none;font-size:0.75rem">'
-                f'{_ov_repo[:60]}{"â€¦" if len(_ov_repo)>60 else ""} â†—</a>'
+                f'{_ov_repo[:60]}{"…" if len(_ov_repo)>60 else ""} ↗</a>'
                 if _ov_repo else
-                '<span style="color:#2e4a60;font-size:0.75rem">â€”</span>'
+                '<span style="color:#2e4a60;font-size:0.75rem">—</span>'
             )
 
-            st.markdown('<div class="sec-label">ðŸ“‹ Package Overview</div>',
+            st.markdown('<div class="sec-label">📋 Package Overview</div>',
                         unsafe_allow_html=True)
             # Build stat cards as individual strings (avoids 4-space Markdown code-block bug)
             def _stat_card(label, value, bg="#0a1e36", label_col="#3d5a75",
@@ -7827,10 +7827,10 @@ if "scan_data" in st.session_state:
                 unsafe_allow_html=True
             )
 
-            # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
-            # SECTION A â€” Official GitHub Repository
-            # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
-            st.markdown('<div class="sec-label">ðŸ“ Official GitHub Repository</div>',
+            # ══════════════════════════════════════════════════════════════
+            # SECTION A — Official GitHub Repository
+            # ══════════════════════════════════════════════════════════════
+            st.markdown('<div class="sec-label">📁 Official GitHub Repository</div>',
                         unsafe_allow_html=True)
 
             if rate_limited:
@@ -7842,17 +7842,17 @@ if "scan_data" in st.session_state:
                     f"Resets in ~{_reset_min} min. "
                     f"Showing cached data where available. "
                     f"Add a GitHub token in the sidebar for unlimited access.",
-                    icon="â±ï¸")
+                    icon="⏱️")
             elif repo_info:
                 ri       = repo_info
                 r_stars  = _fmt_dl(ri.get("stargazers_count",0))
                 r_forks  = _fmt_dl(ri.get("forks_count",0))
                 r_issues = _fmt_dl(ri.get("open_issues_count",0))
                 r_watch  = _fmt_dl(ri.get("watchers_count",0))
-                r_lang   = ri.get("language","") or "â€”"
-                r_lic    = (ri.get("license") or {}).get("name","â€”") or "â€”"
-                r_pushed = (ri.get("pushed_at","") or "")[:10] or "â€”"
-                r_desc   = ri.get("description","") or "â€”"
+                r_lang   = ri.get("language","") or "—"
+                r_lic    = (ri.get("license") or {}).get("name","—") or "—"
+                r_pushed = (ri.get("pushed_at","") or "")[:10] or "—"
+                r_desc   = ri.get("description","") or "—"
                 r_url    = ri.get("html_url","")
                 r_topics = ri.get("topics",[]) or []
                 r_branch = ri.get("default_branch","main")
@@ -7878,18 +7878,18 @@ if "scan_data" in st.session_state:
        style="background:linear-gradient(135deg,#035a8e,#06b6d4);color:#fff;
               border-radius:8px;padding:0.45rem 1rem;font-size:0.8rem;
               font-weight:700;text-decoration:none;white-space:nowrap;flex-shrink:0">
-      View on GitHub â†—
+      View on GitHub ↗
     </a>
   </div>
   <div style="display:flex;gap:2rem;margin-top:1rem;flex-wrap:wrap">
-    <span style="color:#94a3b8;font-size:0.82rem">â­ <strong style="color:#f1f5f9">{r_stars}</strong> stars</span>
-    <span style="color:#94a3b8;font-size:0.82rem">ðŸ´ <strong style="color:#f1f5f9">{r_forks}</strong> forks</span>
-    <span style="color:#94a3b8;font-size:0.82rem">ðŸ› <strong style="color:#f1f5f9">{r_issues}</strong> open issues</span>
-    <span style="color:#94a3b8;font-size:0.82rem">ðŸ‘ï¸ <strong style="color:#f1f5f9">{r_watch}</strong> watchers</span>
-    <span style="color:#94a3b8;font-size:0.82rem">ðŸŒ <strong style="color:#f1f5f9">{r_lang}</strong></span>
-    <span style="color:#94a3b8;font-size:0.82rem">ðŸ“„ <strong style="color:#f1f5f9">{r_lic}</strong></span>
-    <span style="color:#94a3b8;font-size:0.82rem">ðŸ• Last push <strong style="color:#f1f5f9">{r_pushed}</strong></span>
-    <span style="color:#94a3b8;font-size:0.82rem">ðŸŒ¿ <strong style="color:#f1f5f9">{r_branch}</strong></span>
+    <span style="color:#94a3b8;font-size:0.82rem">⭐ <strong style="color:#f1f5f9">{r_stars}</strong> stars</span>
+    <span style="color:#94a3b8;font-size:0.82rem">🍴 <strong style="color:#f1f5f9">{r_forks}</strong> forks</span>
+    <span style="color:#94a3b8;font-size:0.82rem">🐛 <strong style="color:#f1f5f9">{r_issues}</strong> open issues</span>
+    <span style="color:#94a3b8;font-size:0.82rem">👁️ <strong style="color:#f1f5f9">{r_watch}</strong> watchers</span>
+    <span style="color:#94a3b8;font-size:0.82rem">🌐 <strong style="color:#f1f5f9">{r_lang}</strong></span>
+    <span style="color:#94a3b8;font-size:0.82rem">📄 <strong style="color:#f1f5f9">{r_lic}</strong></span>
+    <span style="color:#94a3b8;font-size:0.82rem">🕐 Last push <strong style="color:#f1f5f9">{r_pushed}</strong></span>
+    <span style="color:#94a3b8;font-size:0.82rem">🌿 <strong style="color:#f1f5f9">{r_branch}</strong></span>
   </div>
 </div>""")
 
@@ -7900,27 +7900,27 @@ if "scan_data" in st.session_state:
                     view_btn = (f'<a href="{cmt_link}" target="_blank" style="color:#06b6d4;'
                                 f'font-size:0.78rem;text-decoration:none;background:#0a1e36;'
                                 f'padding:0.25rem 0.7rem;border-radius:6px;border:1px solid #12243d">'
-                                f'View â†—</a>' if cmt_link else "")
+                                f'View ↗</a>' if cmt_link else "")
                     _md(f"""
 <div style="background:rgba(6,182,212,0.05);border:1px solid rgba(6,182,212,0.2);
             border-left:3px solid #06b6d4;border-radius:10px;
             padding:0.8rem 1.1rem;margin-bottom:0.6rem">
   <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:0.3rem">
     <span style="color:#06b6d4;font-size:0.7rem;font-weight:800;
-                 text-transform:uppercase;letter-spacing:1.5px">ðŸ”€ Latest Commit</span>
+                 text-transform:uppercase;letter-spacing:1.5px">🔀 Latest Commit</span>
     {view_btn}
   </div>
   <div style="color:#e2e8f0;font-size:0.88rem;font-weight:600">{latest['message']}</div>
   <div style="color:#4a7090;font-size:0.75rem;margin-top:0.3rem">
     <code style="color:#06b6d4;font-size:0.72rem">{latest['sha']}</code>
-    &nbsp;Â·&nbsp; by <strong style="color:#7eb3d4">{latest.get('author','â€”')}</strong>
-    &nbsp;Â·&nbsp; {latest['date']}
+    &nbsp;·&nbsp; by <strong style="color:#7eb3d4">{latest.get('author','—')}</strong>
+    &nbsp;·&nbsp; {latest['date']}
   </div>
 </div>""")
 
                 # Commit history expander
                 with st.expander(
-                        f"ðŸ“œ Commit History â€” {gh_path}  ({len(all_cmts)} loaded)",
+                        f"📜 Commit History — {gh_path}  ({len(all_cmts)} loaded)",
                         expanded=False):
                     for cmt in all_cmts:
                         clink  = cmt.get("url","")
@@ -7937,23 +7937,23 @@ if "scan_data" in st.session_state:
     <div style="color:#94a3b8;font-size:0.8rem;
                 white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{cmt['message']}</div>
     <div style="color:#2e6080;font-size:0.7rem;margin-top:0.1rem">
-      by <strong style="color:#4a7090">{cmt.get('author','â€”')}</strong>
-      &nbsp;Â·&nbsp; {cmt['date']}
+      by <strong style="color:#4a7090">{cmt.get('author','—')}</strong>
+      &nbsp;·&nbsp; {cmt['date']}
     </div>
   </div>
 </div>""")
 
             elif gh_path:
                 st.info(f"Could not fetch repo data for **{gh_path}**. "
-                        "Try adding a GitHub token in the sidebar.", icon="â„¹ï¸")
+                        "Try adding a GitHub token in the sidebar.", icon="ℹ️")
             else:
-                st.info("No GitHub repository URL found for this package.", icon="â„¹ï¸")
+                st.info("No GitHub repository URL found for this package.", icon="ℹ️")
 
-            # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
-            # SECTION B â€” Original Author  ðŸ’ cherry on top
-            # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+            # ══════════════════════════════════════════════════════════════
+            # SECTION B — Original Author  🍒 cherry on top
+            # ══════════════════════════════════════════════════════════════
             st.markdown("")
-            st.markdown('<div class="sec-label">âœï¸ Original Author</div>',
+            st.markdown('<div class="sec-label">✍️ Original Author</div>',
                         unsafe_allow_html=True)
 
             author_name = raw_maintainers.get("author","").strip()
@@ -7967,31 +7967,31 @@ if "scan_data" in st.session_state:
                     with ac2:
                         adisp = author_gh.get("name") or author_name
                         alogin= author_gh.get("login","")
-                        abio  = author_gh.get("bio") or author_gh.get("description") or "â€”"
+                        abio  = author_gh.get("bio") or author_gh.get("description") or "—"
                         _md(f"""
 <div style="background:#070d1b;border:1px solid #12243d;border-left:3px solid #f59e0b;
             border-radius:10px;padding:0.8rem 1rem">
   <div style="color:#fbbf24;font-size:0.68rem;font-weight:800;
               text-transform:uppercase;letter-spacing:1.5px;margin-bottom:0.3rem">
-    ðŸ’ Library Author
+    🍒 Library Author
   </div>
   <div style="color:#f1f5f9;font-size:0.95rem;font-weight:700">{adisp}</div>
   <div style="color:#4a7090;font-size:0.75rem">@{alogin}</div>
   <div style="color:#3d5a75;font-size:0.78rem;margin-top:0.35rem">{_trunc(abio,100)}</div>
   <div style="margin-top:0.5rem;display:flex;gap:1rem;flex-wrap:wrap">
     <span style="color:#4a7090;font-size:0.75rem">
-      ðŸ“¦ {_fmt_dl(author_gh.get('public_repos',0))} repos
+      📦 {_fmt_dl(author_gh.get('public_repos',0))} repos
     </span>
     <span style="color:#4a7090;font-size:0.75rem">
-      ðŸ‘¥ {_fmt_dl(author_gh.get('followers',0))} followers
+      👥 {_fmt_dl(author_gh.get('followers',0))} followers
     </span>
-    {"<span style='color:#4a7090;font-size:0.75rem'>ðŸ“ " + author_gh['location'] + "</span>" if author_gh.get('location') else ""}
-    {"<span style='color:#4a7090;font-size:0.75rem'>ðŸŒ " + author_gh.get('blog','') + "</span>" if author_gh.get('blog') else ""}
+    {"<span style='color:#4a7090;font-size:0.75rem'>📍 " + author_gh['location'] + "</span>" if author_gh.get('location') else ""}
+    {"<span style='color:#4a7090;font-size:0.75rem'>🌐 " + author_gh.get('blog','') + "</span>" if author_gh.get('blog') else ""}
   </div>
   <div style="margin-top:0.5rem">
     <a href="https://github.com/{alogin}" target="_blank"
        style="color:#06b6d4;font-size:0.78rem;text-decoration:none">
-      ðŸ™ github.com/{alogin}
+      🐙 github.com/{alogin}
     </a>
   </div>
 </div>""")
@@ -8000,10 +8000,10 @@ if "scan_data" in st.session_state:
 <div style="background:#070d1b;border:1px solid #12243d;border-left:3px solid #f59e0b;
             border-radius:10px;padding:0.75rem 1rem">
   <span style="color:#fbbf24;font-size:0.68rem;font-weight:800;
-               text-transform:uppercase;letter-spacing:1.5px">ðŸ’ Library Author &nbsp;</span>
+               text-transform:uppercase;letter-spacing:1.5px">🍒 Library Author &nbsp;</span>
   <span style="color:#f1f5f9;font-size:0.92rem;font-weight:700">{author_name}</span>
   <span style="color:#2e6080;font-size:0.75rem;margin-left:0.8rem">
-    (GitHub profile not found â€” may use a different username)
+    (GitHub profile not found — may use a different username)
   </span>
 </div>""")
             else:
@@ -8012,13 +8012,13 @@ if "scan_data" in st.session_state:
   Author field not available for this registry / package combination.
 </div>""", unsafe_allow_html=True)
 
-            # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
-            # SECTION C â€” All Maintainers with individual GitHub cards
-            # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+            # ══════════════════════════════════════════════════════════════
+            # SECTION C — All Maintainers with individual GitHub cards
+            # ══════════════════════════════════════════════════════════════
             st.markdown("")
             all_m = raw_maintainers.get("maintainers",[])
             st.markdown(
-                f'<div class="sec-label">ðŸ‘¥ Active Maintainers on {reg_name} '
+                f'<div class="sec-label">👥 Active Maintainers on {reg_name} '
                 f'<span style="color:#06b6d4">({len(all_m)} total)</span></div>',
                 unsafe_allow_html=True)
 
@@ -8034,7 +8034,7 @@ if "scan_data" in st.session_state:
                             if mgh and "login" in mgh:
                                 av   = mgh.get("avatar_url","")
                                 disp = mgh.get("name") or uname
-                                bio  = mgh.get("bio") or "â€”"
+                                bio  = mgh.get("bio") or "—"
                                 loc  = mgh.get("location","") or ""
                                 blog = mgh.get("blog","") or ""
                                 repo_c = _fmt_dl(mgh.get("public_repos",0))
@@ -8068,21 +8068,21 @@ if "scan_data" in st.session_state:
     {_trunc(bio,80)}
   </div>
   <div style="display:flex;gap:1rem;font-size:0.72rem;color:#2e6080;flex-wrap:wrap">
-    <span>ðŸ“¦ {repo_c} repos</span>
-    <span>ðŸ‘¥ {fol_c} followers</span>
-    {"<span>ðŸ“ " + loc + "</span>" if loc else ""}
+    <span>📦 {repo_c} repos</span>
+    <span>👥 {fol_c} followers</span>
+    {"<span>📍 " + loc + "</span>" if loc else ""}
   </div>
   <div style="margin-top:0.5rem;display:flex;gap:0.8rem;flex-wrap:wrap">
     <a href="https://github.com/{login}" target="_blank"
-       style="color:#06b6d4;font-size:0.73rem;text-decoration:none">ðŸ™ GitHub</a>
+       style="color:#06b6d4;font-size:0.73rem;text-decoration:none">🐙 GitHub</a>
     <a href="{ln_url}" target="_blank"
-       style="color:#5a9fd4;font-size:0.73rem;text-decoration:none">ðŸ”— LinkedIn</a>
-    {"<a href='" + blog + "' target='_blank' style='color:#5a9fd4;font-size:0.73rem;text-decoration:none'>ðŸŒ Website</a>" if blog else ""}
-    {"<span style='color:#2e6080;font-size:0.72rem'>âœ‰ï¸ " + email + "</span>" if email else ""}
+       style="color:#5a9fd4;font-size:0.73rem;text-decoration:none">🔗 LinkedIn</a>
+    {"<a href='" + blog + "' target='_blank' style='color:#5a9fd4;font-size:0.73rem;text-decoration:none'>🌐 Website</a>" if blog else ""}
+    {"<span style='color:#2e6080;font-size:0.72rem'>✉️ " + email + "</span>" if email else ""}
   </div>
 </div>""")
                             else:
-                                # No GitHub profile found â€” show minimal card
+                                # No GitHub profile found — show minimal card
                                 _md(f"""
 <div style="background:#070d1b;border:1px solid #12243d;border-radius:12px;
             padding:0.85rem;margin-bottom:0.6rem;opacity:0.75">
@@ -8092,8 +8092,8 @@ if "scan_data" in st.session_state:
                 justify-content:center;color:#06b6d4;font-weight:700;
                 font-size:1rem;flex-shrink:0">{uname[:1].upper() if uname else "?"}</div>
     <div>
-      <div style="color:#94a3b8;font-size:0.88rem;font-weight:700">{uname or "â€”"}</div>
-      {"<div style='color:#2e6080;font-size:0.72rem'>âœ‰ï¸ " + email + "</div>" if email else ""}
+      <div style="color:#94a3b8;font-size:0.88rem;font-weight:700">{uname or "—"}</div>
+      {"<div style='color:#2e6080;font-size:0.72rem'>✉️ " + email + "</div>" if email else ""}
       <div style="color:#243850;font-size:0.7rem;margin-top:0.2rem">
         GitHub profile not found
       </div>
@@ -8101,22 +8101,22 @@ if "scan_data" in st.session_state:
   </div>
 </div>""")
             else:
-                st.info("Maintainer list not available from this registry's API.", icon="â„¹ï¸")
+                st.info("Maintainer list not available from this registry's API.", icon="ℹ️")
 
-            # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
-            # SECTION D â€” Owner / Org GitHub Profile
-            # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+            # ══════════════════════════════════════════════════════════════
+            # SECTION D — Owner / Org GitHub Profile
+            # ══════════════════════════════════════════════════════════════
             if owner_prof:
                 st.markdown("")
-                st.markdown('<div class="sec-label">ðŸ¢ Owner / Org Profile</div>',
+                st.markdown('<div class="sec-label">🏢 Owner / Org Profile</div>',
                             unsafe_allow_html=True)
                 op1, op2 = st.columns([1, 2], gap="large")
                 with op1:
                     av = owner_prof.get("avatar_url","")
                     if av: st.image(av, width=88)
-                    odisp = owner_prof.get("name") or handle or "â€”"
+                    odisp = owner_prof.get("name") or handle or "—"
                     ologin= owner_prof.get("login","")
-                    obio  = owner_prof.get("bio") or owner_prof.get("description") or "â€”"
+                    obio  = owner_prof.get("bio") or owner_prof.get("description") or "—"
                     otype = "Organisation" if is_org else "Individual"
                     _md(f"""
 <div style="margin-top:0.4rem">
@@ -8127,29 +8127,29 @@ if "scan_data" in st.session_state:
 </div>""")
                     st.markdown("")
                     for item in [
-                        (owner_prof.get("location"), f"ðŸ“ {owner_prof.get('location','')}"),
-                        (owner_prof.get("blog"),     f"ðŸŒ [{owner_prof.get('blog','')}]({owner_prof.get('blog','')})"),
-                        (owner_prof.get("email"),    f"âœ‰ï¸ {owner_prof.get('email','')}"),
+                        (owner_prof.get("location"), f"📍 {owner_prof.get('location','')}"),
+                        (owner_prof.get("blog"),     f"🌐 [{owner_prof.get('blog','')}]({owner_prof.get('blog','')})"),
+                        (owner_prof.get("email"),    f"✉️ {owner_prof.get('email','')}"),
                         (owner_prof.get("twitter_username"),
-                         f"ðŸ¦ [@{owner_prof.get('twitter_username','')}](https://twitter.com/{owner_prof.get('twitter_username','')})"),
+                         f"🐦 [@{owner_prof.get('twitter_username','')}](https://twitter.com/{owner_prof.get('twitter_username','')})"),
                     ]:
                         if item[0]:
                             st.markdown(f"<div style='color:#4a7090;font-size:0.8rem;margin-bottom:0.2rem'>{item[1]}</div>",
                                         unsafe_allow_html=True)
                     st.markdown("")
-                    st.markdown(f"[ðŸ™ GitHub](https://github.com/{ologin})")
+                    st.markdown(f"[🐙 GitHub](https://github.com/{ologin})")
                     if is_org:
-                        st.markdown(f"[ðŸ”— LinkedIn Company](https://www.linkedin.com/company/{ologin})")
+                        st.markdown(f"[🔗 LinkedIn Company](https://www.linkedin.com/company/{ologin})")
                     else:
-                        st.markdown(f"[ðŸ”— LinkedIn](https://www.linkedin.com/search/results/people/?keywords={odisp.replace(' ','%20')})")
+                        st.markdown(f"[🔗 LinkedIn](https://www.linkedin.com/search/results/people/?keywords={odisp.replace(' ','%20')})")
 
                 with op2:
                     s1, s2, s3 = st.columns(3)
-                    s1.metric("Public Repos", _fmt_dl(owner_prof.get("public_repos",0)) or "â€”")
-                    s2.metric("Followers",    _fmt_dl(owner_prof.get("followers",0)) or "â€”")
+                    s1.metric("Public Repos", _fmt_dl(owner_prof.get("public_repos",0)) or "—")
+                    s2.metric("Followers",    _fmt_dl(owner_prof.get("followers",0)) or "—")
                     s3.metric("Following" if not is_org else "Members",
                               _fmt_dl(owner_prof.get("following",0) or
-                                      owner_prof.get("public_members",0)) or "â€”")
+                                      owner_prof.get("public_members",0)) or "—")
                     if owner_repos:
                         st.markdown('<div class="sec-label">Top Repositories</div>',
                                     unsafe_allow_html=True)
@@ -8165,28 +8165,28 @@ if "scan_data" in st.session_state:
       {r.get('name','')}
     </a>
     <span style="color:#2e6080;font-size:0.72rem">
-      â­ {_fmt_dl(r.get('stargazers_count',0))} &nbsp; ðŸ´ {_fmt_dl(r.get('forks_count',0))}
-      {"&nbsp;Â·&nbsp;" + r.get('language','') if r.get('language') else ""}
+      ⭐ {_fmt_dl(r.get('stargazers_count',0))} &nbsp; 🍴 {_fmt_dl(r.get('forks_count',0))}
+      {"&nbsp;·&nbsp;" + r.get('language','') if r.get('language') else ""}
     </span>
   </div>
   <div style="color:#3d5a75;font-size:0.73rem;margin-top:0.2rem">
-    {_trunc(r.get('description','') or 'â€”', 90)}
+    {_trunc(r.get('description','') or '—', 90)}
   </div>
 </div>""")
 
-            # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
-            # SECTION E â€” Security Intelligence: Key Maintainers from GitHub
-            # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+            # ══════════════════════════════════════════════════════════════
+            # SECTION E — Security Intelligence: Key Maintainers from GitHub
+            # ══════════════════════════════════════════════════════════════
             st.markdown("")
             st.markdown(
-                '<div class="sec-label">ðŸ” Security Intelligence â€” Key Maintainers</div>',
+                '<div class="sec-label">🔍 Security Intelligence — Key Maintainers</div>',
                 unsafe_allow_html=True)
 
             if contrib_intel:
                 st.markdown(
                     f'<div style="color:#4a6580;font-size:0.78rem;margin-bottom:1rem">'
                     f'Top {len(contrib_intel)} contributors to '
-                    f'<code style="color:#06b6d4">{gh_path}</code> Â· '
+                    f'<code style="color:#06b6d4">{gh_path}</code> · '
                     f'enriched with GitHub Social Accounts, orgs, 2FA, GPG signing, '
                     f'account age risk, email domain classification.</div>',
                     unsafe_allow_html=True)
@@ -8197,7 +8197,7 @@ if "scan_data" in st.session_state:
                     name      = ci.get("name", ci["login"])
                     login_    = ci["login"]
                     commits   = _fmt_dl(ci.get("contributions", 0))
-                    bio       = ci.get("bio", "") or "â€”"
+                    bio       = ci.get("bio", "") or "—"
                     company   = ci.get("company", "") or ""
                     location  = ci.get("location", "") or ""
                     email     = ci.get("email", "") or ""
@@ -8209,8 +8209,8 @@ if "scan_data" in st.session_state:
                     gh_url    = ci.get("github_url", f"https://github.com/{login_}")
                     li_url    = ci.get("linkedin_url")
                     tw_url    = ci.get("twitter_url")
-                    last_act  = ci.get("last_active", "â€”")
-                    created   = ci.get("created_at", "â€”")
+                    last_act  = ci.get("last_active", "—")
+                    created   = ci.get("created_at", "—")
                     hireable  = ci.get("hireable")
                     is_admin  = ci.get("site_admin", False)
 
@@ -8224,11 +8224,11 @@ if "scan_data" in st.session_state:
                     is_org_member  = ci.get("is_org_member", False)
                     repo_org_      = ci.get("repo_org", "")
 
-                    # â”€â”€ Rank badge â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+                    # ── Rank badge ────────────────────────────────────────────
                     rank_colors = {1:"#f59e0b", 2:"#94a3b8", 3:"#cd7c3a"}
                     rank_color  = rank_colors.get(rank, "#06b6d4")
-                    rank_label  = {1:"ðŸ¥‡ #1 Maintainer", 2:"ðŸ¥ˆ #2 Contributor",
-                                   3:"ðŸ¥‰ #3 Contributor"}.get(rank, f"#{rank} Contributor")
+                    rank_label  = {1:"🥇 #1 Maintainer", 2:"🥈 #2 Contributor",
+                                   3:"🥉 #3 Contributor"}.get(rank, f"#{rank} Contributor")
 
                     av_html = (
                         f'<img src="{av}" style="width:60px;height:60px;border-radius:50%;'
@@ -8239,7 +8239,7 @@ if "scan_data" in st.session_state:
                         f'justify-content:center;color:{rank_color};font-weight:800;'
                         f'font-size:1.3rem;flex-shrink:0">{login_[:1].upper()}</div>')
 
-                    # â”€â”€ LinkedIn â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+                    # ── LinkedIn ──────────────────────────────────────────────
                     li_svg = ('<svg width="12" height="12" viewBox="0 0 24 24" fill="white">'
                               '<path d="M20.447 20.452h-3.554v-5.569c0-1.328-.027-3.037-1.852-3.037'
                               '-1.853 0-2.136 1.445-2.136 2.939v5.667H9.351V9h3.414v1.561h.046'
@@ -8253,45 +8253,45 @@ if "scan_data" in st.session_state:
                         li_html = (f'<a href="{li_url}" target="_blank" style="display:inline-flex;'
                                    f'align-items:center;gap:0.3rem;background:#0a66c2;color:#fff;'
                                    f'border-radius:6px;padding:0.28rem 0.7rem;font-size:0.72rem;'
-                                   f'font-weight:700;text-decoration:none">{li_svg} LinkedIn â†—</a>')
+                                   f'font-weight:700;text-decoration:none">{li_svg} LinkedIn ↗</a>')
                     else:
                         sq = f"site:linkedin.com/in+{name.replace(' ','+')}".replace(" ","+")
                         li_html = (f'<a href="https://www.google.com/search?q={sq}" target="_blank" '
                                    f'style="display:inline-flex;align-items:center;gap:0.3rem;'
                                    f'background:#1e3a5f;color:#7eb3d4;border:1px solid #12243d;'
                                    f'border-radius:6px;padding:0.28rem 0.7rem;font-size:0.72rem;'
-                                   f'font-weight:700;text-decoration:none">ðŸ”Ž Search LinkedIn</a>'
+                                   f'font-weight:700;text-decoration:none">🔎 Search LinkedIn</a>'
                                    f'<span style="color:#2e5070;font-size:0.66rem">(not on GitHub)</span>')
 
-                    # â”€â”€ Social links â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+                    # ── Social links ──────────────────────────────────────────
                     tw_html   = (f'<a href="{tw_url}" target="_blank" style="color:#94a3b8;'
-                                 f'font-size:0.72rem;text-decoration:none">ð• Twitter â†—</a>'
+                                 f'font-size:0.72rem;text-decoration:none">𝕏 Twitter ↗</a>'
                                  if tw_url else "")
                     blog_html = (f'<a href="{blog}" target="_blank" style="color:#5a9fd4;'
                                  f'font-size:0.72rem;text-decoration:none">'
-                                 f'ðŸŒ {blog[:35]}{"â€¦" if len(blog)>35 else ""}</a>'
+                                 f'🌐 {blog[:35]}{"…" if len(blog)>35 else ""}</a>'
                                  if blog else "")
 
-                    # â”€â”€ Security signal chips â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+                    # ── Security signal chips ─────────────────────────────────
                     age_color  = age_info.get("color","#4a6580")
-                    age_label  = age_info.get("label","â€”")
+                    age_label  = age_info.get("label","—")
                     ecls_color = email_cls.get("color","#4a6580")
-                    ecls_label = email_cls.get("label","â€”")
-                    sig_label  = sig_info.get("label","â€”")
+                    ecls_label = email_cls.get("label","—")
+                    sig_label  = sig_info.get("label","—")
 
                     # npm 2FA
                     if   npm_2fa_val == "disabled":
-                        npm2fa_html = '<span style="color:#ef4444;font-weight:700">ðŸ”´ npm 2FA OFF</span>'
+                        npm2fa_html = '<span style="color:#ef4444;font-weight:700">🔴 npm 2FA OFF</span>'
                     elif npm_2fa_val == "unknown":
                         npm2fa_html = '<span style="color:#4a6580">npm 2FA: unknown</span>'
                     else:
-                        npm2fa_html = f'<span style="color:#22c55e;font-weight:700">ðŸŸ¢ npm 2FA: {npm_2fa_val}</span>'
+                        npm2fa_html = f'<span style="color:#22c55e;font-weight:700">🟢 npm 2FA: {npm_2fa_val}</span>'
 
                     # Org membership
                     if is_org_member:
-                        org_html = f'<span style="color:#22c55e">âœ… Official org member (@{repo_org_})</span>'
+                        org_html = f'<span style="color:#22c55e">✅ Official org member (@{repo_org_})</span>'
                     else:
-                        org_html = f'<span style="color:#f59e0b">âš ï¸ Not in @{repo_org_} org</span>'
+                        org_html = f'<span style="color:#f59e0b">⚠️ Not in @{repo_org_} org</span>'
 
                     # Public orgs list
                     orgs_html = (", ".join(
@@ -8300,18 +8300,18 @@ if "scan_data" in st.session_state:
                         for o in user_orgs[:5])
                         if user_orgs else '<span style="color:#2e6080">No public orgs</span>')
 
-                    npm_pkgs_html = (f'<span style="color:#94a3b8">ðŸ“¦ {npm_pkgs_val} npm packages</span>'
+                    npm_pkgs_html = (f'<span style="color:#94a3b8">📦 {npm_pkgs_val} npm packages</span>'
                                      if npm_pkgs_val is not None else "")
-                    hireable_html = ('<span style="color:#22c55e">ðŸ’¼ Open to work</span>'
+                    hireable_html = ('<span style="color:#22c55e">💼 Open to work</span>'
                                      if hireable else "")
-                    admin_html    = ('<span style="color:#ef4444;font-weight:700">âš¡ GitHub Staff</span>'
+                    admin_html    = ('<span style="color:#ef4444;font-weight:700">⚡ GitHub Staff</span>'
                                      if is_admin else "")
 
                     _md(f"""
 <div style="background:#070d1b;border:1px solid #12243d;border-left:3px solid {rank_color};
             border-radius:14px;padding:1.1rem 1.3rem;margin-bottom:1rem">
 
-  <!-- â‘  Header: avatar + name + rank -->
+  <!-- ① Header: avatar + name + rank -->
   <div style="display:flex;align-items:center;gap:1rem;margin-bottom:0.75rem">
     {av_html}
     <div style="flex:1;min-width:0">
@@ -8324,28 +8324,28 @@ if "scan_data" in st.session_state:
       </div>
       <a href="{gh_url}" target="_blank" style="color:#4a7090;font-size:0.77rem;text-decoration:none">
         @{login_}</a>
-      {"<span style='color:#4a7090;font-size:0.72rem'> Â· " + company + "</span>" if company else ""}
+      {"<span style='color:#4a7090;font-size:0.72rem'> · " + company + "</span>" if company else ""}
       <div style="color:#3d5a75;font-size:0.77rem;margin-top:0.25rem;line-height:1.5">{_trunc(bio,120)}</div>
     </div>
   </div>
 
-  <!-- â‘¡ Activity & stats row -->
+  <!-- ② Activity & stats row -->
   <div style="display:flex;flex-wrap:wrap;gap:1.2rem;font-size:0.73rem;color:#4a6580;
               padding:0.6rem 0;border-top:1px solid #0f1e30;border-bottom:1px solid #0f1e30;
               margin-bottom:0.7rem">
-    <span>ðŸ”€ <strong style="color:#94a3b8">{commits}</strong> commits</span>
-    <span>ðŸ‘¥ <strong style="color:#94a3b8">{followers}</strong> followers</span>
-    <span>âž¡ï¸ <strong style="color:#94a3b8">{following}</strong> following</span>
-    <span>ðŸ“¦ <strong style="color:#94a3b8">{repos}</strong> repos</span>
-    <span>ðŸ“ <strong style="color:#94a3b8">{gists}</strong> gists</span>
-    {"<span>ðŸ“ <strong style='color:#94a3b8'>" + location + "</strong></span>" if location else ""}
-    {"<span>ðŸ—“ï¸ Joined <strong style='color:#94a3b8'>" + created + "</strong></span>" if created and created!="â€”" else ""}
-    {"<span>âš¡ Active <strong style='color:#94a3b8'>" + last_act + "</strong></span>" if last_act and last_act!="â€”" else ""}
+    <span>🔀 <strong style="color:#94a3b8">{commits}</strong> commits</span>
+    <span>👥 <strong style="color:#94a3b8">{followers}</strong> followers</span>
+    <span>➡️ <strong style="color:#94a3b8">{following}</strong> following</span>
+    <span>📦 <strong style="color:#94a3b8">{repos}</strong> repos</span>
+    <span>📝 <strong style="color:#94a3b8">{gists}</strong> gists</span>
+    {"<span>📍 <strong style='color:#94a3b8'>" + location + "</strong></span>" if location else ""}
+    {"<span>🗓️ Joined <strong style='color:#94a3b8'>" + created + "</strong></span>" if created and created!="—" else ""}
+    {"<span>⚡ Active <strong style='color:#94a3b8'>" + last_act + "</strong></span>" if last_act and last_act!="—" else ""}
     {npm_pkgs_html}
     {hireable_html}
   </div>
 
-  <!-- â‘¢ Security signals -->
+  <!-- ③ Security signals -->
   <div style="display:grid;grid-template-columns:1fr 1fr;gap:0.45rem;
               margin-bottom:0.75rem;font-size:0.73rem">
     <div style="background:#0a1e36;border:1px solid #12243d;border-radius:8px;padding:0.4rem 0.6rem">
@@ -8357,13 +8357,13 @@ if "scan_data" in st.session_state:
       <div style="color:#4a6580;font-size:0.63rem;text-transform:uppercase;
                   letter-spacing:1px;margin-bottom:0.15rem">Email Domain</div>
       <div style="color:{ecls_color};font-weight:600">
-        {ecls_label}{"  <span style='color:#4a6580;font-weight:400'>(" + (email or "â€”") + ")</span>" if email else ""}
+        {ecls_label}{"  <span style='color:#4a6580;font-weight:400'>(" + (email or "—") + ")</span>" if email else ""}
       </div>
     </div>
     <div style="background:#0a1e36;border:1px solid #12243d;border-radius:8px;padding:0.4rem 0.6rem">
       <div style="color:#4a6580;font-size:0.63rem;text-transform:uppercase;
                   letter-spacing:1px;margin-bottom:0.15rem">GPG Commit Signing</div>
-      <div style="font-weight:600">{sig_label if sig_label!="â€”" else "<span style='color:#4a6580'>No commits sampled</span>"}</div>
+      <div style="font-weight:600">{sig_label if sig_label!="—" else "<span style='color:#4a6580'>No commits sampled</span>"}</div>
     </div>
     <div style="background:#0a1e36;border:1px solid #12243d;border-radius:8px;padding:0.4rem 0.6rem">
       <div style="color:#4a6580;font-size:0.63rem;text-transform:uppercase;
@@ -8382,11 +8382,11 @@ if "scan_data" in st.session_state:
     </div>
   </div>
 
-  <!-- â‘£ Social / contact links -->
+  <!-- ④ Social / contact links -->
   <div style="display:flex;align-items:center;gap:0.7rem;flex-wrap:wrap">
     {li_html}
     <a href="{gh_url}" target="_blank"
-       style="color:#06b6d4;font-size:0.72rem;text-decoration:none">ðŸ™ GitHub â†—</a>
+       style="color:#06b6d4;font-size:0.72rem;text-decoration:none">🐙 GitHub ↗</a>
     {tw_html}
     {blog_html}
   </div>
@@ -8394,29 +8394,29 @@ if "scan_data" in st.session_state:
 </div>""")
 
             elif not gh_path:
-                st.info("No GitHub repository linked â€” cannot fetch contributor intelligence.", icon="â„¹ï¸")
+                st.info("No GitHub repository linked — cannot fetch contributor intelligence.", icon="ℹ️")
             else:
-                # Not yet loaded â€” show on-demand button
+                # Not yet loaded — show on-demand button
                 _md(f"""
 <div style="background:#070d1b;border:1px solid #12243d;border-radius:14px;
             padding:1.4rem 1.6rem;text-align:center">
   <div style="color:#94a3b8;font-size:0.85rem;margin-bottom:0.3rem">
-    ðŸ” Security intelligence for <code style="color:#06b6d4">{gh_path}</code>
+    🔍 Security intelligence for <code style="color:#06b6d4">{gh_path}</code>
     not loaded yet.
   </div>
   <div style="color:#4a6580;font-size:0.75rem;margin-bottom:1rem">
-    Fetches top 5 contributors Â· LinkedIn Â· npm 2FA Â· GPG signing Â·
-    account age risk Â· email classification Â· org membership
-    <br><strong style="color:#f59e0b">~25 GitHub API calls</strong> â€”
+    Fetches top 5 contributors · LinkedIn · npm 2FA · GPG signing ·
+    account age risk · email classification · org membership
+    <br><strong style="color:#f59e0b">~25 GitHub API calls</strong> —
     result is cached for 7 days after first load.
   </div>
 </div>""")
 
                 _load_btn_key = f"load_intel_{_pkey}"
-                if st.button("ðŸ” Load Security Intelligence", key=_load_btn_key,
+                if st.button("🔍 Load Security Intelligence", key=_load_btn_key,
                              use_container_width=True):
                     tok = github_token or None
-                    with st.spinner("Fetching contributor intelligenceâ€¦"):
+                    with st.spinner("Fetching contributor intelligence…"):
                         _jc2 = _load_json_cache(pkg_name, reg_name)
                         contrib_intel = gh_contributors_intel(
                             gh_path, tok, n=5, reg_name=reg_name)
@@ -8428,12 +8428,12 @@ if "scan_data" in st.session_state:
                             if _pkey in st.session_state.get("profile_cache",{}) else None
                     st.rerun()
 
-            # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
-            # SECTION F â€” OpenSSF Security Scorecard
-            # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+            # ══════════════════════════════════════════════════════════════
+            # SECTION F — OpenSSF Security Scorecard
+            # ══════════════════════════════════════════════════════════════
             if openssf:
                 st.markdown("")
-                st.markdown('<div class="sec-label">ðŸ›¡ï¸ OpenSSF Security Scorecard</div>',
+                st.markdown('<div class="sec-label">🛡️ OpenSSF Security Scorecard</div>',
                             unsafe_allow_html=True)
                 score     = openssf.get("score", 0)
                 sc_date   = openssf.get("date", "")
@@ -8449,7 +8449,7 @@ if "scan_data" in st.session_state:
   <div style="text-align:center;flex-shrink:0">
     <div style="font-size:2.5rem;font-weight:900;color:{sc_color};line-height:1">{score}</div>
     <div style="font-size:0.65rem;color:{sc_color};font-weight:700;
-                text-transform:uppercase;letter-spacing:1px">/10 Â· {sc_label}</div>
+                text-transform:uppercase;letter-spacing:1px">/10 · {sc_label}</div>
   </div>
   <div>
     <div style="color:#f1f5f9;font-weight:700;font-size:0.9rem">
@@ -8457,13 +8457,13 @@ if "scan_data" in st.session_state:
     <div style="color:#4a6580;font-size:0.75rem;margin-top:0.2rem">
       Automated security health check for
       <code style="color:#06b6d4">{gh_path}</code>
-      {"Â· as of " + sc_date if sc_date else ""}
+      {"· as of " + sc_date if sc_date else ""}
     </div>
     <div style="margin-top:0.5rem">
       <a href="https://securityscorecards.dev/viewer/?uri=github.com/{gh_path}"
          target="_blank"
          style="color:#06b6d4;font-size:0.75rem;text-decoration:none">
-        View full report â†—
+        View full report ↗
       </a>
     </div>
   </div>
@@ -8478,13 +8478,13 @@ if "scan_data" in st.session_state:
                         chk_score  = chk.get("score", -1)
                         chk_reason = chk.get("reason","")
                         if chk_score < 0:
-                            chk_color, chk_bar = "#4a6580", "â€”"
+                            chk_color, chk_bar = "#4a6580", "—"
                         elif chk_score >= 8:
-                            chk_color, chk_bar = "#22c55e", "â–ˆ" * chk_score + "â–‘" * (10-chk_score)
+                            chk_color, chk_bar = "#22c55e", "█" * chk_score + "░" * (10-chk_score)
                         elif chk_score >= 5:
-                            chk_color, chk_bar = "#f59e0b", "â–ˆ" * chk_score + "â–‘" * (10-chk_score)
+                            chk_color, chk_bar = "#f59e0b", "█" * chk_score + "░" * (10-chk_score)
                         else:
-                            chk_color, chk_bar = "#ef4444", "â–ˆ" * max(chk_score,0) + "â–‘" * (10-max(chk_score,0))
+                            chk_color, chk_bar = "#ef4444", "█" * max(chk_score,0) + "░" * (10-max(chk_score,0))
 
                         with cols[i % 2]:
                             _md(f"""
@@ -8501,19 +8501,19 @@ if "scan_data" in st.session_state:
   <div style="color:#2e6080;font-size:0.67rem">{_trunc(chk_reason,80)}</div>
 </div>""")
 
-            # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
-            # SECTION G â€” Live CVE Intelligence Feed
-            # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+            # ══════════════════════════════════════════════════════════════
+            # SECTION G — Live CVE Intelligence Feed
+            # ══════════════════════════════════════════════════════════════
             st.markdown("")
-            st.markdown('<div class="sec-label">ðŸš¨ Live CVE Intelligence Feed</div>',
+            st.markdown('<div class="sec-label">🚨 Live CVE Intelligence Feed</div>',
                         unsafe_allow_html=True)
 
             _cve_eco_supported = reg_name in _REG_TO_OSV_ECO
 
-            # Fetch directly via @st.cache_data â€” completely independent of the
+            # Fetch directly via @st.cache_data — completely independent of the
             # session_state / JSON cache system, so it ALWAYS reflects live API data.
             if _cve_eco_supported:
-                with st.spinner("Fetching live CVE dataâ€¦"):
+                with st.spinner("Fetching live CVE data…"):
                     _cve_tok = globals().get("github_token") or None
                     live_cves = fetch_live_cves(
                         pkg_name, reg_name,
@@ -8522,15 +8522,15 @@ if "scan_data" in st.session_state:
                 live_cves = []
 
             if not _cve_eco_supported:
-                st.info(f"CVE feed not available for **{reg_name}** â€” "
+                st.info(f"CVE feed not available for **{reg_name}** — "
                         "covered registries: NPM, PyPI, RubyGems, Maven Central, "
-                        "NuGet, crates.io, Go Modules, Packagist.", icon="â„¹ï¸")
+                        "NuGet, crates.io, Go Modules, Packagist.", icon="ℹ️")
             elif not live_cves:
-                st.success(f"âœ… No known vulnerabilities found for **{pkg_name}** "
+                st.success(f"✅ No known vulnerabilities found for **{pkg_name}** "
                            f"on **{reg_name}** (OSV.dev + GitHub Advisory Database).",
-                           icon="ðŸ›¡ï¸")
+                           icon="🛡️")
             else:
-                # â”€â”€ Summary banner â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+                # ── Summary banner ────────────────────────────────────────
                 _crit  = sum(1 for c in live_cves if c.get("severity") == "CRITICAL")
                 _high  = sum(1 for c in live_cves if c.get("severity") == "HIGH")
                 _med   = sum(1 for c in live_cves if c.get("severity") == "MEDIUM")
@@ -8556,17 +8556,17 @@ if "scan_data" in st.session_state:
   <div style="font-size:1.6rem;font-weight:900;color:#ef4444;flex-shrink:0">{_total}</div>
   <div>
     <div style="color:#fca5a5;font-weight:700;font-size:0.88rem">
-      Known vulnerabilities Â· <code style="color:#06b6d4;font-size:0.8rem">{pkg_name}</code>
+      Known vulnerabilities · <code style="color:#06b6d4;font-size:0.8rem">{pkg_name}</code>
     </div>
     <div style="margin-top:0.4rem">{badges}</div>
   </div>
   <div style="margin-left:auto;font-size:0.68rem;color:#4a6580;text-align:right">
-    ðŸ”´ NVD Â· OSV.dev Â· GitHub Advisory Â· Repo Advisories<br>
-    <span style="color:#2e6080">4 live sources Â· refreshes every hour</span>
+    🔴 NVD · OSV.dev · GitHub Advisory · Repo Advisories<br>
+    <span style="color:#2e6080">4 live sources · refreshes every hour</span>
   </div>
 </div>""")
 
-                # â”€â”€ Per-CVE cards â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+                # ── Per-CVE cards ─────────────────────────────────────────
                 _SEV_COLORS = {
                     "CRITICAL": ("#7f1d1d", "#fca5a5", "#ef4444"),
                     "HIGH":     ("#431407", "#fdba74", "#f97316"),
@@ -8580,8 +8580,8 @@ if "scan_data" in st.session_state:
                     bg, fg, accent = _SEV_COLORS.get(sev, _SEV_COLORS["UNKNOWN"])
                     cve_id  = cve.get("cve_id", cve.get("id","?"))
                     summary = cve.get("summary","") or "No description available."
-                    pub     = cve.get("published","") or "â€”"
-                    mod     = cve.get("modified","") or "â€”"
+                    pub     = cve.get("published","") or "—"
+                    mod     = cve.get("modified","") or "—"
                     fixed   = cve.get("fixed_versions",[])
                     vuln_v  = cve.get("vuln_versions",[])
                     refs    = cve.get("references",[])
@@ -8596,11 +8596,11 @@ if "scan_data" in st.session_state:
                         nvd_url = f"https://nvd.nist.gov/vuln/detail/{cve_id}"
                         cve_links += (f'<a href="{nvd_url}" target="_blank" '
                                       f'style="color:{accent};font-size:0.72rem;'
-                                      f'text-decoration:none;margin-right:0.7rem">NVD â†—</a>')
+                                      f'text-decoration:none;margin-right:0.7rem">NVD ↗</a>')
                     if osv_url:
                         cve_links += (f'<a href="{osv_url}" target="_blank" '
                                       f'style="color:#06b6d4;font-size:0.72rem;'
-                                      f'text-decoration:none;margin-right:0.7rem">{src} â†—</a>')
+                                      f'text-decoration:none;margin-right:0.7rem">{src} ↗</a>')
                     for ref in refs[:2]:
                         rurl = ref.get("url","")
                         if rurl and rurl not in (osv_url,):
@@ -8608,16 +8608,16 @@ if "scan_data" in st.session_state:
                             cve_links += (f'<a href="{rurl}" target="_blank" '
                                           f'style="color:#4a7090;font-size:0.68rem;'
                                           f'text-decoration:none;margin-right:0.5rem">'
-                                          f'{rlabel} â†—</a>')
+                                          f'{rlabel} ↗</a>')
 
                     fixed_html = ""
                     if fixed:
                         fixed_html = (f'<span style="color:#22c55e;font-size:0.72rem;'
-                                      f'font-weight:600">âœ” Fixed in: '
+                                      f'font-weight:600">✔ Fixed in: '
                                       f'{", ".join(fixed)}</span>')
                     elif vuln_v:
                         fixed_html = (f'<span style="color:#f59e0b;font-size:0.72rem">'
-                                      f'âš  Affected: {", ".join(vuln_v[:3])}</span>')
+                                      f'⚠ Affected: {", ".join(vuln_v[:3])}</span>')
                     else:
                         fixed_html = '<span style="color:#4a6580;font-size:0.72rem">Fix version: unknown</span>'
 
@@ -8662,19 +8662,19 @@ if "scan_data" in st.session_state:
                 # OSV / NVD attribution
                 st.markdown(
                     '<div style="color:#2e6080;font-size:0.67rem;margin-top:0.4rem">'
-                    'ðŸ”´ Live feeds: '
+                    '🔴 Live feeds: '
                     '<a href="https://nvd.nist.gov" target="_blank" '
-                    'style="color:#06b6d4;text-decoration:none">NVD</a> Â· '
+                    'style="color:#06b6d4;text-decoration:none">NVD</a> · '
                     '<a href="https://osv.dev" target="_blank" '
-                    'style="color:#06b6d4;text-decoration:none">OSV.dev</a> Â· '
+                    'style="color:#06b6d4;text-decoration:none">OSV.dev</a> · '
                     '<a href="https://github.com/advisories" target="_blank" '
-                    'style="color:#06b6d4;text-decoration:none">GitHub Advisory DB</a> Â· '
+                    'style="color:#06b6d4;text-decoration:none">GitHub Advisory DB</a> · '
                     'GitHub Repo Advisories'
-                    ' &nbsp;Â·&nbsp; Repo advisories publish instantly on disclosure '
-                    'â€” before NVD processes them. Cached 1 hr.</div>',
+                    ' &nbsp;·&nbsp; Repo advisories publish instantly on disclosure '
+                    '— before NVD processes them. Cached 1 hr.</div>',
                     unsafe_allow_html=True)
 
-            # â”€â”€ JSON Export â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+            # ── JSON Export ────────────────────────────────────────────────
             st.markdown("---")
             profile_export = {
                 "package":  pkg_name,
@@ -8763,17 +8763,17 @@ if "scan_data" in st.session_state:
             }
             dl_name = (gh_path or pkg_name).replace("/","_").replace(":","_")
             st.download_button(
-                "â¬‡ Download Full Profile JSON",
+                "⬇ Download Full Profile JSON",
                 json.dumps(profile_export, indent=2, default=str),
                 f"profile_{dl_name}.json",
                 "application/json",
                 use_container_width=True)
 
     else:
-        st.error("No matches found across any registry.", icon="ðŸ”")
+        st.error("No matches found across any registry.", icon="🔍")
         with st.expander("Format reference", expanded=True):
             st.markdown("""
-**Add a space to switch to search mode** â€” e.g. `Google Guava`, `image recognition`
+**Add a space to switch to search mode** — e.g. `Google Guava`, `image recognition`
 
 | Registry | Format | Example |
 |---|---|---|
@@ -8787,8 +8787,8 @@ if "scan_data" in st.session_state:
             """)
 
     if all_errors:
-        with st.expander(f"âš ï¸ {len(all_errors)} registry error(s) â€” click to expand"):
-            st.caption("These are unexpected errors (not network timeouts â€” those are silently skipped).")
+        with st.expander(f"⚠️ {len(all_errors)} registry error(s) — click to expand"):
+            st.caption("These are unexpected errors (not network timeouts — those are silently skipped).")
             for e in all_errors:
                 # Extract adapter name and short message for a clean display
                 parts = e.split(":", 2)
@@ -8798,6 +8798,6 @@ if "scan_data" in st.session_state:
                     f'<div style="background:#0d1b2a;border:1px solid #1e3a5f;border-left:3px solid #ef4444;'
                     f'border-radius:8px;padding:0.5rem 0.75rem;margin-bottom:0.4rem;font-size:0.78rem">'
                     f'<span style="color:#ef4444;font-weight:700">{adapter_name}</span>'
-                    f'<span style="color:#4a6580"> â€” </span>'
+                    f'<span style="color:#4a6580"> — </span>'
                     f'<span style="color:#94a3b8">{short_msg[:200]}</span></div>',
                     unsafe_allow_html=True)
