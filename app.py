@@ -1508,36 +1508,48 @@ def _enrich_countries(df, github_token: str = "") -> "pd.DataFrame":
 
     # ── Pass 4: stitch per-row country + collect repo-search candidates ───
     # Resolution order per row:
-    #   1. _gh_owner       (from adapter — most accurate when available)
-    #   2. uname           (extracted from Maintainer text)
-    #   3. pkg_org         (well-known package → canonical GitHub org map)
-    #   4. repo search     (ONLY when no GitHub profile was found at all)
+    #   1. _gh_owner  (from adapter repo URL — authoritative signal)
+    #   2. uname      (from Maintainer field — ONLY when _gh_owner absent)
+    #   3. pkg_org    (well-known package→org map — ONLY when both above absent)
+    #   4. repo search (ONLY when no GitHub profile found at all)
     #
-    # KEY RULE: "Unknown" means a profile WAS found but location is not public.
-    #           "❓ No Profile" means no GitHub profile exists for any variant.
-    # Repo-search is only allowed for "❓ No Profile" — never for "Unknown".
-    # This prevents popular repos (lodash/lodash, etc.) from being used as a
-    # false country source for unrelated packages on other registries.
+    # CRITICAL RULE — two distinct sentinel values:
+    #   "Unknown"      = GitHub profile WAS found, location simply not public
+    #                    → FINAL answer, do NOT fall through to uname/pkg_org
+    #   "❓ No Profile" = no GitHub profile exists for any variant tried
+    #                    → continue to next signal; repo-search allowed
+    #
+    # This prevents the false-country bug: _gh_owner returns "Unknown" (empty
+    # location on real profile) → old code fell through to uname → matched a
+    # different person with same name who had a US location → showed "United States"
     countries          = []
-    repo_search_queue  = []   # (row_index, library_name)
-    _BAD         = {"Unknown", "⚠️ Rate Limited", "", None}
-    _NO_PROFILE  = {"❓ No Profile", "Unknown", "⚠️ Rate Limited", "", None}
+    repo_search_queue  = []
+    _FINAL   = {"Unknown", "⚠️ Rate Limited"}  # confirmed answer — stop chain
+    _MISSING = {"❓ No Profile", "", None}       # no info yet — try next signal
     for i, c in enumerate(candidates):
         country = "❓ No Profile"
+
+        # Signal 1: _gh_owner from source repo URL (most reliable — direct from metadata)
         if c["gh_owner"]:
             country = name_to_country.get(c["gh_owner"], "❓ No Profile")
-        if country in _NO_PROFILE and c["uname"]:
+
+        # Signal 2: uname guessed from Maintainer display name
+        # Only runs when _gh_owner was NOT set by the adapter at all.
+        # Never overrides a confirmed "Unknown" (that means profile exists, just private).
+        if country in _MISSING and c["uname"]:
             country = name_to_country.get(c["uname"], "❓ No Profile")
-        if country in _NO_PROFILE and c["pkg_org"]:
+
+        # Signal 3: well-known package→canonical GitHub org map
+        # Only runs when both _gh_owner and uname were absent.
+        if country in _MISSING and c["pkg_org"]:
             country = name_to_country.get(c["pkg_org"], "❓ No Profile")
 
-        # Only trigger repo-search when NO GitHub profile was found at all.
-        # "Unknown" = profile exists, location private → accept as final answer.
+        # Repo-search fallback: only when no GitHub profile was found at all.
         if country == "❓ No Profile" and c["lib"] and len(c["lib"]) >= 3:
             repo_search_queue.append((i, c["lib"]))
             countries.append("Unknown")    # placeholder, may be overridden
         else:
-            countries.append(country if country not in _BAD else "Unknown")
+            countries.append(country if country not in _MISSING else "Unknown")
 
     # ── Pass 5: parallel repo-search fallback for still-Unknown rows ──────
     # Use a smaller pool (4) — search API has stricter rate limits than user API
