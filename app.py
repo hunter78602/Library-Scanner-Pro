@@ -1569,7 +1569,7 @@ def _enrich_countries(df, github_token: str = "") -> "pd.DataFrame":
         # Apply repo-search results back to the corresponding rows
         for idx, lib in repo_search_queue:
             c = lib_to_country.get(lib, "Unknown")
-            if c not in _BAD:
+            if c not in _MISSING:
                 countries[idx] = c
 
     df = df.copy()
