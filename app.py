@@ -1245,16 +1245,28 @@ def _fetch_github_country(username: str, token: str = "",
                              headers=headers, timeout=TIMEOUT)
             if r.status_code == 200:
                 profile_found = True
-                loc     = r.json().get("location") or ""
+                data    = r.json()
+                loc     = data.get("location") or ""
                 country = _normalize_country(loc)
                 # Only cache REAL countries — never cache "Unknown" so a
                 # subsequent run will retry (e.g. after a normalizer update)
                 if country and country != "Unknown":
                     _country_cache_set(username, country)
-                # Return immediately — even if country is "Unknown".
-                # The profile exists; location is simply not public.
-                # Caller must NOT fall through to repo-search for this case.
-                return country
+                if country != "Unknown":
+                    return country
+                # Location is empty or unrecognised.
+                # Distinguish Organisation vs User so the caller can decide
+                # whether to fall through to the individual maintainer signal:
+                #   "❓ Org"  → GitHub Organisation with no location set.
+                #               The repo owner is an org, but the individual
+                #               maintainer (uname) may still have a location.
+                #               Caller SHOULD try the next signal.
+                #   "Unknown" → GitHub User with no location set.
+                #               This person chose not to share their location.
+                #               Caller must NOT guess via a different name.
+                if data.get("type") == "Organization":
+                    return "❓ Org"
+                return "Unknown"
             if r.status_code in (403, 429):
                 rate_limited = True
                 break          # don't keep hitting a rate-limited API
@@ -1524,8 +1536,8 @@ def _enrich_countries(df, github_token: str = "") -> "pd.DataFrame":
     # different person with same name who had a US location → showed "United States"
     countries          = []
     repo_search_queue  = []
-    _FINAL   = {"Unknown", "⚠️ Rate Limited"}  # confirmed answer — stop chain
-    _MISSING = {"❓ No Profile", "", None}       # no info yet — try next signal
+    _FINAL   = {"Unknown", "⚠️ Rate Limited"}          # confirmed answer — stop chain
+    _MISSING = {"❓ No Profile", "❓ Org", "", None}    # no info yet — try next signal
     for i, c in enumerate(candidates):
         country = "❓ No Profile"
 
@@ -1533,14 +1545,18 @@ def _enrich_countries(df, github_token: str = "") -> "pd.DataFrame":
         if c["gh_owner"]:
             country = name_to_country.get(c["gh_owner"], "❓ No Profile")
 
-        # Signal 2: uname guessed from Maintainer display name
-        # Only runs when _gh_owner was NOT set by the adapter at all.
-        # Never overrides a confirmed "Unknown" (that means profile exists, just private).
+        # Signal 2: uname from Maintainer display name
+        # Runs when:
+        #   a) _gh_owner was absent entirely (adapter found no GitHub repo URL), OR
+        #   b) _gh_owner pointed to a GitHub Organisation with no location set
+        #      ("❓ Org") — org has no location but individual maintainer may have one
+        # Never runs when _gh_owner returned "Unknown" — that means an individual
+        # user who chose not to share their location; guessing via name is wrong.
         if country in _MISSING and c["uname"]:
             country = name_to_country.get(c["uname"], "❓ No Profile")
 
         # Signal 3: well-known package→canonical GitHub org map
-        # Only runs when both _gh_owner and uname were absent.
+        # Only runs when both _gh_owner and uname were absent or unresolved.
         if country in _MISSING and c["pkg_org"]:
             country = name_to_country.get(c["pkg_org"], "❓ No Profile")
 
