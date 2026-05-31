@@ -1194,23 +1194,23 @@ _KNOWN_ORG_COUNTRY: dict[str, str] = {
 }
 
 @st.cache_data(ttl=7200, show_spinner=False)
-def _fetch_github_country(username: str, token: str = "",
-                          skip_hardcode: bool = False) -> str:
+def _fetch_github_country_cached(username: str, token: str = "",
+                                  skip_hardcode: bool = False) -> str:
     """
-    Return the normalised country for a GitHub username.
+    Cached inner function: DB cache + GitHub API lookup.
 
-    Tries multiple username variants because registry maintainer fields don't
-    always exactly match GitHub usernames (e.g. "Mark Finger" → try
-    MarkFinger, mark-finger, mark, etc. — first that returns HTTP 200 wins).
+    Do NOT call this directly — use the _fetch_github_country() wrapper below
+    which checks _KNOWN_ORG_COUNTRY OUTSIDE this cache so that new hardcode
+    entries take effect immediately without needing a cache clear.
 
-    Cache hierarchy:
-      0. Curated known-orgs map  — overrides for big tech with unreliable profiles
-      1. SQLite persistent cache — 24-hour TTL (survives restarts)
-      2. GitHub API call         — last resort, tries multiple variants
+    Cache hierarchy (this function only):
+      1. PostgreSQL persistent cache — 24-hour TTL (survives restarts)
+      2. GitHub API call             — last resort, tries multiple variants
 
-    skip_hardcode=True: used by _country_via_repo_search so it reads the live
-    GitHub location only, never inheriting a hardcoded country for an unrelated
-    popular org (e.g. avoids 'lodash/lodash' → _KNOWN_ORG_COUNTRY → US).
+    skip_hardcode is kept as a parameter only to ensure that
+    _fetch_github_country_cached("X", token, skip_hardcode=True) and
+    _fetch_github_country_cached("X", token, skip_hardcode=False) are
+    stored as separate cache entries (used by _country_via_repo_search).
 
     IMPORTANT — confirmed-found rule:
     If the GitHub API returns HTTP 200 for any variant but the location field is
@@ -1222,16 +1222,7 @@ def _fetch_github_country(username: str, token: str = "",
     if not username or username in ("—", ""):
         return "Unknown"
 
-    # 0. Known-org override — protects against unreliable GitHub profile data.
-    #    Example: github.com/facebook has empty location → API says "Unknown",
-    #    but Meta is clearly USA-based.  Without this, React shows "Unknown".
-    #    Skipped when called from _country_via_repo_search (skip_hardcode=True)
-    #    to avoid cross-registry contamination (repo search finds lodash/lodash
-    #    → should NOT inherit the JS-ecosystem hardcode for Maven packages).
-    if not skip_hardcode and username.lower() in _KNOWN_ORG_COUNTRY:
-        return _KNOWN_ORG_COUNTRY[username.lower()]
-
-    # 1. SQLite persistent cache — but only trust REAL country results.
+    # 1. PostgreSQL persistent cache — but only trust REAL country results.
     #    If we previously cached "Unknown" it might have been due to a missing
     #    location field, a normalization gap (like "Cyprus, Larnaca" before we
     #    added Cyprus), or rate limiting. Always retry these.
@@ -1292,6 +1283,45 @@ def _fetch_github_country(username: str, token: str = "",
         return "❓ No Profile"
 
     return "Unknown"
+
+
+def _fetch_github_country(username: str, token: str = "",
+                          skip_hardcode: bool = False) -> str:
+    """
+    Return the normalised country for a GitHub username.
+
+    This is a thin non-cached wrapper around _fetch_github_country_cached().
+    The hardcode check (step 0) lives HERE — outside @st.cache_data — so that
+    any new entry added to _KNOWN_ORG_COUNTRY takes effect IMMEDIATELY on the
+    next request, without needing to clear the Streamlit in-memory cache.
+
+    Without this split, @st.cache_data would cache the entire function including
+    the hardcode step, meaning stale "Unknown" results persist for up to 2 hours
+    even after a hardcode is added.  This was the root cause of ElemeFE → China
+    not working after deployment.
+
+    Cache hierarchy:
+      0. _KNOWN_ORG_COUNTRY (this wrapper, always fresh)
+      1. Streamlit @st.cache_data 2-hour in-memory cache  } _fetch_github_country_cached
+      2. PostgreSQL country_cache table (24-hour TTL)      }
+      3. GitHub API (last resort)                          }
+
+    skip_hardcode=True: used by _country_via_repo_search so the repo-search path
+    reads the live GitHub location only, avoiding cross-registry contamination
+    (e.g. repo search finds lodash/lodash → should NOT inherit a JS-ecosystem
+    hardcode for a Maven package lookup).
+    """
+    # 0. Known-org override — OUTSIDE cache so new entries take effect immediately.
+    #    Example: github.com/facebook has empty location → API says "Unknown",
+    #    but Meta is clearly USA-based.  Without this wrapper pattern, adding
+    #    "facebook":"United States" would be shadowed by a stale cached "Unknown"
+    #    until the 2-hour TTL expired.
+    if not skip_hardcode and username.lower() in _KNOWN_ORG_COUNTRY:
+        return _KNOWN_ORG_COUNTRY[username.lower()]
+
+    # 1-3. DB cache + GitHub API (expensive — lives inside @st.cache_data)
+    return _fetch_github_country_cached(username, token, skip_hardcode)
+
 
 def _extract_gh_username(maintainer: str) -> str:
     """
@@ -6384,7 +6414,7 @@ if clear_btn:
 if clear_country_btn:
     country_cache_clear()
     st.session_state.pop("country_df", None)
-    _fetch_github_country.clear()
+    _fetch_github_country_cached.clear()
     _country_via_repo_search.clear()
     st.success("Country cache cleared — re-open Supply Chain tab to re-resolve all countries with the latest logic.")
 
