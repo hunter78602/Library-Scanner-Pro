@@ -1148,6 +1148,14 @@ _KNOWN_ORG_COUNTRY: dict[str, str] = {
     "svelte":"United Kingdom","sveltejs":"United Kingdom","rich-harris":"United Kingdom",
     "solidjs":"Canada","ryansolid":"Canada",
     "vuejs":"China","yyx990803":"China","evanyou":"China",
+    # Chinese tech orgs & maintainers
+    "elemefe":"China","ElemeFE":"China",             # Element UI — Ele.me (Alibaba)
+    "element-plus":"China",                          # Element Plus — Vue 3 port
+    "ant-design":"China","ant-design-vue":"China",   # Ant Design — Alibaba
+    "alibaba":"China","alipay":"China","aliyun":"China",
+    "tencent":"China","arco-design":"China",         # Arco Design — ByteDance
+    "bytedance":"China","modern-js":"China",
+    "youzan":"China","vant-ui":"China",              # Vant — Youzan
     "angular":"United States","angularjs":"United States",
     # CSS frameworks
     "bulma":"United Kingdom","jgthms":"United Kingdom",
