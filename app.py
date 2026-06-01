@@ -1579,24 +1579,29 @@ def _enrich_countries(df, github_token: str = "") -> "pd.DataFrame":
     for i, c in enumerate(candidates):
         country = "❓ No Profile"
 
-        # Signal 1: _gh_owner from source repo URL (most reliable — direct from metadata)
+        # Signal 1: _gh_owner from source repo URL (authoritative — from package metadata)
         if c["gh_owner"]:
             country = name_to_country.get(c["gh_owner"], "❓ No Profile")
 
-        # Signal 2: uname from Maintainer display name
-        # Runs when:
-        #   a) _gh_owner was absent entirely (adapter found no GitHub repo URL), OR
-        #   b) _gh_owner pointed to a GitHub Organisation with no location set
-        #      ("❓ Org") — org has no location but individual maintainer may have one
-        # Never runs when _gh_owner returned "Unknown" — that means an individual
-        # user who chose not to share their location; guessing via name is wrong.
+        # Signal 1b: pkg_org from curated hardcode map — same authority as _gh_owner.
+        # Runs ONLY when _gh_owner was absent (no repo URL in fresh metadata, or old
+        # cached row that predates _gh_owner extraction).
+        # Checked BEFORE uname because pkg_org is a package-level signal (curated),
+        # whereas uname is an individual-level signal that can produce "Unknown" for
+        # an unrelated npm/PyPI publisher — which would then block Signal 3 via _FINAL.
+        # Bug it fixes: element-ui → _gh_owner absent → uname="lucaslago" → "Unknown"
+        # (FINAL, blocks chain) → pkg_org="ElemeFE" never runs → wrong result "Unknown".
+        if not c["gh_owner"] and c["pkg_org"]:
+            pkg_result = name_to_country.get(c["pkg_org"], "❓ No Profile")
+            if pkg_result not in _MISSING:   # got a real answer (even "Unknown" is final)
+                country = pkg_result
+
+        # Signal 2: uname from Maintainer display name.
+        # Runs when _gh_owner was absent AND pkg_org was also absent or unresolved.
+        # NEVER runs when _gh_owner returned "Unknown" — individual chose not to share.
+        # NEVER runs when pkg_org gave a curated hardcode answer (already final above).
         if country in _MISSING and c["uname"]:
             country = name_to_country.get(c["uname"], "❓ No Profile")
-
-        # Signal 3: well-known package→canonical GitHub org map
-        # Only runs when both _gh_owner and uname were absent or unresolved.
-        if country in _MISSING and c["pkg_org"]:
-            country = name_to_country.get(c["pkg_org"], "❓ No Profile")
 
         # Repo-search fallback: only when no GitHub profile was found at all.
         if country == "❓ No Profile" and c["lib"] and len(c["lib"]) >= 3:
