@@ -2654,7 +2654,7 @@ def _single_maintainer_risk(maintainer: str, downloads) -> str:
         return "ℹ️ Solo"          # small team but moderate risk
     return ""
 
-def _risk_score(row, rules=None) -> int:
+def _risk_score(row) -> int:
     """
     Composite risk score 0-100 (higher = safer).
     Combines status, license, CVE, country, source, and maintainer signals.
@@ -2666,11 +2666,7 @@ def _risk_score(row, rules=None) -> int:
       • Country    (15) — Trusted=15, Caution=10, Unrated=8, Restricted=0
       • Source     (10) — has repo=10, none=0
       • Maintainer (5)  — multi or low-dl solo=5, Bus Factor=0
-
-    Optional: pass `rules` (loaded via _load_custom_rules) to apply user-defined
-    score deductions for matched rules:
-      • critical = -50  • high = -25  • medium = -10  • low = -3
-    Score is clamped to [0, 100] so multiple matches never break the band logic.
+    Score is clamped to [0, 100].
     """
     score = 0
     # Status
@@ -2699,10 +2695,6 @@ def _risk_score(row, rules=None) -> int:
             row.get("Maintainer", ""), row.get("Downloads", ""))
     if "Bus Factor" not in sm:
         score += 5
-    # ── Custom rules penalty (Phase 2: user-uploaded blocklist) ────────────
-    if rules:
-        for m in _custom_rule_match(row, rules):
-            score -= _SEV_PENALTY.get(m["severity"], 0)
     return max(0, min(score, 100))
 
 def _risk_band(score: int) -> str:
@@ -2712,124 +2704,6 @@ def _risk_band(score: int) -> str:
     if score >= 40: return f"High ({score})"
     return f"Critical ({score})"
 
-# ── Custom Rules / Blocklist (user-uploaded CSV/JSON) ─────────────────────────
-# Lets users define their own rules (e.g. banned packages, restricted licenses)
-# that contribute to the existing 4-tier Risk classification via score deductions.
-import csv as _csv_mod
-import io as _io_mod
-_VALID_FIELDS      = {"library","maintainer","country","license","registry","version"}
-_VALID_MATCH_TYPES = {"exact","contains","regex"}
-_VALID_SEVERITY    = {"low","medium","high","critical"}
-_SEV_DEFAULT_EMOJI = {"low":"🟢","medium":"🟡","high":"🟠","critical":"🚨"}
-_SEV_PENALTY       = {"low":3,"medium":10,"high":25,"critical":50}
-# Rule field name → DataFrame column
-_FIELD_TO_COL = {
-    "library":"Library", "maintainer":"Maintainer", "country":"Country",
-    "license":"License", "registry":"Registry",     "version":"Version",
-}
-
-def _load_custom_rules(uploaded_file):
-    """
-    Parse a Streamlit UploadedFile (CSV or JSON) into a normalised rule list.
-    Returns (rules, warnings). Malformed rows are skipped with a per-row warning;
-    regex rules that fail to compile are also dropped.
-
-    File format is auto-detected from the filename extension (.json vs .csv).
-    Bare JSON arrays and {"rules": [...]} wrappers are both accepted.
-    """
-    if uploaded_file is None:
-        return [], []
-    try:
-        raw = uploaded_file.getvalue().decode("utf-8", errors="replace")
-    except Exception as _e:
-        return [], [f"Decode error: {_e}"]
-    name = (getattr(uploaded_file, "name", "") or "").lower()
-    rows = []
-    warnings = []
-
-    try:
-        if name.endswith(".json"):
-            obj = json.loads(raw)
-            rows = obj.get("rules", obj) if isinstance(obj, dict) else obj
-            if not isinstance(rows, list):
-                return [], ["JSON must be an array or {\"rules\": [...]} object"]
-        else:
-            rows = list(_csv_mod.DictReader(_io_mod.StringIO(raw)))
-    except Exception as _e:
-        return [], [f"Parse error: {_e}"]
-
-    out = []
-    for i, r in enumerate(rows, start=1):
-        if not isinstance(r, dict):
-            warnings.append(f"Row {i}: not an object — skipped")
-            continue
-        rid    = str(r.get("rule_id","") or f"R{i:03d}").strip()
-        field  = str(r.get("field","") or "").strip().lower()
-        mtype  = str(r.get("match_type","") or "contains").strip().lower()
-        patt   = str(r.get("pattern","") or "").strip()
-        sev    = str(r.get("severity","") or "").strip().lower()
-
-        if field not in _VALID_FIELDS:
-            warnings.append(f"Row {i} ({rid}): bad field '{field}' — skipped"); continue
-        if mtype not in _VALID_MATCH_TYPES:
-            warnings.append(f"Row {i} ({rid}): bad match_type '{mtype}' — skipped"); continue
-        if sev not in _VALID_SEVERITY:
-            warnings.append(f"Row {i} ({rid}): bad severity '{sev}' — skipped"); continue
-        if not patt:
-            warnings.append(f"Row {i} ({rid}): empty pattern — skipped"); continue
-
-        compiled = None
-        if mtype == "regex":
-            try:
-                compiled = re.compile(patt, re.IGNORECASE)
-            except re.error as _re_err:
-                warnings.append(f"Row {i} ({rid}): regex error — {_re_err}"); continue
-
-        out.append({
-            "rule_id":    rid,
-            "name":       str(r.get("name", rid) or rid).strip() or rid,
-            "field":      field,
-            "match_type": mtype,
-            "pattern":    patt,
-            "compiled":   compiled,
-            "severity":   sev,
-            "emoji":      str(r.get("emoji","") or _SEV_DEFAULT_EMOJI[sev]),
-        })
-    return out, warnings
-
-def _custom_rule_match(row, rules):
-    """
-    Return the list of rule dicts that match this row.
-    Pure function — no side effects. Mirrors _single_maintainer_risk pattern.
-    """
-    if not rules:
-        return []
-    matched = []
-    for rule in rules:
-        col = _FIELD_TO_COL.get(rule["field"])
-        if not col:
-            continue
-        val = str(row.get(col, "") or "")
-        if not val or val.strip() in ("—","N/A","None"):
-            continue
-
-        hit = False
-        if rule["match_type"] == "exact":
-            hit = val.strip().lower() == rule["pattern"].lower()
-        elif rule["match_type"] == "contains":
-            hit = rule["pattern"].lower() in val.lower()
-        elif rule["match_type"] == "regex" and rule["compiled"] is not None:
-            hit = bool(rule["compiled"].search(val))
-
-        if hit:
-            matched.append(rule)
-    return matched
-
-def _custom_flags_display(matched):
-    """Render matched rules into the 'Custom Flags' column string."""
-    if not matched:
-        return ""
-    return ", ".join(f"{m['emoji']} {m['name']}" for m in matched)
 
 # ── Maintainer helpers ─────────────────────────────────────────────────────────
 _ORG_TOKENS = {
@@ -6300,49 +6174,6 @@ with st.sidebar:
     nexus_repo_creds = st.text_input("user:password (optional)", type="password",
                                      placeholder="admin:password", key="nxs_creds")
 
-    # ── Custom Rules / Blocklist (CSV or JSON) ────────────────────────────────
-    # Users upload their own pattern-based rules that deduct from each package's
-    # Risk Score. Matching is shown inline in a new "Custom Flags" column.
-    st.markdown('<div class="sb-label">Custom Rules / Blocklist</div>',
-                unsafe_allow_html=True)
-    st.caption("Upload CSV/JSON. Matches deduct from Risk Score (UTF-8 only).")
-
-    _uploaded_rules = st.file_uploader(
-        "Rules file", type=["csv","json"],
-        key="custom_rules_upload", label_visibility="collapsed",
-        help="Columns: rule_id, name, field, match_type, pattern, severity, [emoji]"
-    )
-    # Reload only when the filename actually changes (Streamlit reruns happen
-    # on every interaction — without this guard we'd re-parse on each rerun)
-    if (_uploaded_rules is not None
-            and st.session_state.get("custom_rules_filename") != _uploaded_rules.name):
-        _new_rules, _new_warns = _load_custom_rules(_uploaded_rules)
-        st.session_state["custom_rules"]          = _new_rules
-        st.session_state["custom_rules_filename"] = _uploaded_rules.name
-        st.session_state["custom_rules_warnings"] = _new_warns
-
-    _loaded_rules = st.session_state.get("custom_rules", [])
-    if _loaded_rules:
-        st.success(
-            f"✓ {len(_loaded_rules)} rule{'s' if len(_loaded_rules) > 1 else ''} "
-            f"loaded from `{st.session_state.get('custom_rules_filename','file')}`"
-        )
-        with st.expander("Preview loaded rules", expanded=False):
-            _preview = [
-                {"ID": r["rule_id"], "Name": r["name"], "Field": r["field"],
-                 "Match": r["match_type"], "Pattern": r["pattern"],
-                 "Severity": r["severity"]}
-                for r in _loaded_rules
-            ]
-            st.dataframe(_preview, use_container_width=True, hide_index=True)
-        for _w in st.session_state.get("custom_rules_warnings", []):
-            st.warning(_w)
-        if st.button("Clear rules", key="clear_custom_rules",
-                     use_container_width=True):
-            for _k in ("custom_rules","custom_rules_filename",
-                       "custom_rules_warnings","custom_rules_upload"):
-                st.session_state.pop(_k, None)
-            st.rerun()
 
 kaggle_username, kaggle_key_val = "", ""
 if kaggle_raw and ":" in kaggle_raw:
@@ -6585,22 +6416,10 @@ if "scan_data" in st.session_state:
                                                   r.get("Downloads","")),
                 axis=1
             )
-            # ── Custom Rules / Blocklist (Phase 2 user-uploaded blocklist) ───
-            # If rules have been uploaded via sidebar, compute the Custom Flags
-            # column (which rules each package matched) BEFORE Risk Score so
-            # the penalty is reflected in the band.
-            _active_rules = st.session_state.get("custom_rules", [])
-            if _active_rules:
-                disp_df["Custom Flags"] = disp_df.apply(
-                    lambda r: _custom_flags_display(_custom_rule_match(r, _active_rules)),
-                    axis=1
-                )
-
             # Risk Score (composite 0-100) — Country tier will improve it once
             # the user clicks "Load Maintainer Countries" (rerun adds Country col).
-            # Custom rules (if any) deduct from the score via the `rules` param.
             disp_df["Risk Score"]   = disp_df.apply(
-                lambda r: _risk_score(r, _active_rules), axis=1
+                lambda r: _risk_score(r), axis=1
             )
             disp_df["Risk"]         = disp_df["Risk Score"].apply(_risk_band)
 
@@ -6629,19 +6448,6 @@ if "scan_data" in st.session_state:
             _dc7.metric("⚠️ Bus Factor", f"{_bus_factor}",
                         help="Single maintainer + 1M+ downloads — left-pad style risk")
 
-            # Tertiary row — custom-rule metrics (only when rules are loaded)
-            if _active_rules:
-                _dc9, _dc10 = st.columns(2)
-                _flagged = (disp_df["Custom Flags"].astype(str).str.len() > 0).sum()
-                _crit_flagged = sum(
-                    1 for _, _r in disp_df.iterrows()
-                    if any(m["severity"] == "critical"
-                           for m in _custom_rule_match(_r, _active_rules))
-                )
-                _dc9.metric("🎯 Rules Triggered", f"{int(_flagged)}",
-                            help="Packages matching at least one custom rule")
-                _dc10.metric("🚨 Critical Rule Hits", f"{int(_crit_flagged)}",
-                             help="Packages matching at least one critical-severity rule")
 
             # Top 5 riskiest packages
             if _crit > 0 or _high > 0:
@@ -6710,7 +6516,6 @@ if "scan_data" in st.session_state:
                     "CVEs":         st.column_config.TextColumn("CVE IDs",      width="medium"),
                     "License":      st.column_config.TextColumn("License",      width="small"),
                     "License Risk": st.column_config.TextColumn("Lic Risk",     width="small"),
-                    "Custom Flags": st.column_config.TextColumn("Custom Flags", width="medium"),
                     "Downloads":    st.column_config.TextColumn("Downloads",    width="small"),
                     "Last Updated": st.column_config.TextColumn("Last Updated", width="small"),
                     "Description":  st.column_config.TextColumn("Description",  width="large"),
@@ -6919,7 +6724,7 @@ if "scan_data" in st.session_state:
                 # Risk
                 "Risk", "Risk Score",
                 # Other
-                "Repo", "Custom Flags",
+                "Repo",
             ]
             _csv_cols = [c for c in _csv_col_order if c in _export_base.columns]
             # Append any remaining columns not in the ordered list
@@ -6958,7 +6763,6 @@ if "scan_data" in st.session_state:
                         "risk_score":    _r.get("Risk Score", None),
                         "license_risk":  _strip_emoji_fn(_r.get("License Risk", "")),
                         "cves":          str(_r.get("CVEs", "") or ""),
-                        "custom_flags":  str(_r.get("Custom Flags", "") or ""),
                     },
                 }
                 _json_records.append(_rec)
