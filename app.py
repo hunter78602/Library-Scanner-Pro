@@ -2815,38 +2815,29 @@ def check_vuln(pkg, eco, version=""):
     """
     Query OSV.dev for known vulnerabilities for a package.
 
-    Fixes applied vs old implementation:
-      1. Pagination — fetches ALL pages via next_page_token (old code only got ~10)
-      2. No cap    — returns every CVE/GHSA found (old code silently dropped after 4)
-      3. Version   — when a version is supplied, OSV filters to only CVEs that
-                     affect that specific version (eliminates false positives from
-                     already-patched historical CVEs)
+    - Passes version to OSV so only CVEs affecting the specific version in use
+      are returned — eliminates false positives from already-patched old CVEs.
+    - Single request per package (no pagination) to keep scan speed fast.
+      OSV returns up to 1000 results per request which covers all real-world cases.
+    - No cap on CVE IDs returned (old code silently dropped after 4).
     """
     if eco not in OSV_ECO: return "—"
     try:
-        all_vulns  = []
-        page_token = None
-        while True:
-            payload = {"package": {"name": pkg, "ecosystem": eco}}
-            if version and version not in ("N/A", "—", ""):
-                payload["version"] = version
-            if page_token:
-                payload["page_token"] = page_token
-            r = requests.post("https://api.osv.dev/v1/query",
-                              json=payload, timeout=8)
-            if r.status_code != 200:
-                break
-            data       = r.json()
-            all_vulns.extend(data.get("vulns", []))
-            page_token = data.get("next_page_token")
-            if not page_token:
-                break
-        if not all_vulns:
-            return "None"
+        payload = {"package": {"name": pkg, "ecosystem": eco}}
+        if version and version not in ("N/A", "—", ""):
+            # Strip any suffix like " (yanked)" before sending to OSV
+            clean_ver = version.split(" ")[0].strip()
+            if clean_ver:
+                payload["version"] = clean_ver
+        r = requests.post("https://api.osv.dev/v1/query",
+                          json=payload, timeout=6)
+        if r.status_code != 200: return "—"
+        vulns = r.json().get("vulns", [])
+        if not vulns: return "None"
         cves = list(dict.fromkeys([
             next((a for a in (x.get("aliases") or []) if a.startswith("CVE")),
                  x.get("id", "?"))
-            for x in all_vulns
+            for x in vulns
         ]))
         return ", ".join(cves)
     except:
