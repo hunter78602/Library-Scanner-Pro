@@ -2811,21 +2811,46 @@ def _filter_search(data: list, query: str) -> list:
 # ── OSV CVE check (returns CVE string only) ────────────────────────────────────
 OSV_ECO = {"PyPI","npm","RubyGems","crates.io","Packagist","Maven","NuGet","Go"}
 
-def check_vuln(pkg, eco):
+def check_vuln(pkg, eco, version=""):
+    """
+    Query OSV.dev for known vulnerabilities for a package.
+
+    Fixes applied vs old implementation:
+      1. Pagination — fetches ALL pages via next_page_token (old code only got ~10)
+      2. No cap    — returns every CVE/GHSA found (old code silently dropped after 4)
+      3. Version   — when a version is supplied, OSV filters to only CVEs that
+                     affect that specific version (eliminates false positives from
+                     already-patched historical CVEs)
+    """
     if eco not in OSV_ECO: return "—"
     try:
-        r = requests.post("https://api.osv.dev/v1/query",
-                          json={"package":{"name":pkg,"ecosystem":eco}}, timeout=6)
-        if r.status_code != 200: return "—"
-        vulns = r.json().get("vulns",[])
-        if not vulns: return "None"
+        all_vulns  = []
+        page_token = None
+        while True:
+            payload = {"package": {"name": pkg, "ecosystem": eco}}
+            if version and version not in ("N/A", "—", ""):
+                payload["version"] = version
+            if page_token:
+                payload["page_token"] = page_token
+            r = requests.post("https://api.osv.dev/v1/query",
+                              json=payload, timeout=8)
+            if r.status_code != 200:
+                break
+            data       = r.json()
+            all_vulns.extend(data.get("vulns", []))
+            page_token = data.get("next_page_token")
+            if not page_token:
+                break
+        if not all_vulns:
+            return "None"
         cves = list(dict.fromkeys([
             next((a for a in (x.get("aliases") or []) if a.startswith("CVE")),
-                 x.get("id","?"))
-            for x in vulns
+                 x.get("id", "?"))
+            for x in all_vulns
         ]))
-        return ", ".join(cves[:4])
-    except: return "—"
+        return ", ".join(cves)
+    except:
+        return "—"
 
 def _has_cve(cve_str):
     return cve_str not in ("—","None","","Timeout","Error") and bool(cve_str)
@@ -4050,7 +4075,7 @@ class PyPIAdapter(BaseAdapter):
         except: pass
         name = d.get("maintainer") or d.get("author") or "—"
         m    = _m_auto(name)
-        c    = check_vuln(pkg, "PyPI")
+        c    = check_vuln(pkg, "PyPI", v)
         # Extract the REAL GitHub org from project_urls for country lookup
         _gh = ""
         for v_ in (d.get("project_urls") or {}).values():
@@ -4147,7 +4172,7 @@ class NPMAdapter(BaseAdapter):
                         tm2  = d2.get("time", {})
                         lu2  = tm2.get("modified", "") or tm2.get(v2, "") or "—"
                         m2   = self._npm_maintainer(base, d2)
-                        c2   = check_vuln(base, "npm")
+                        c2   = check_vuln(base, "npm", v2)
                         return _row(
                             base, "NPM", v2,
                             d2.get("description", ""), d2.get("license", ""),
@@ -4159,7 +4184,7 @@ class NPMAdapter(BaseAdapter):
         # ────────────────────────────────────────────────────────────────────
 
         m = self._npm_maintainer(pkg, d)
-        c = check_vuln(pkg,"npm")
+        c = check_vuln(pkg, "npm", v)
         # Source button → always the npm page for this package.
         # Country lookup → use the REAL GitHub org from the repo URL,
         # not the npm publish-account name (e.g. "fb" → "facebook").
@@ -4209,7 +4234,7 @@ class RubyGemsAdapter(BaseAdapter):
         d    = r.json()
         authors = d.get("authors","—") or "—"
         m    = _m_auto(authors)
-        c    = check_vuln(pkg.lower(),"RubyGems")
+        c    = check_vuln(pkg.lower(), "RubyGems", d.get("version",""))
         last_updated = d.get("version_created_at","") or d.get("created_at","") or "—"
         # Country lookup → real GitHub org from source_code_uri / homepage
         _gh = (_gh_owner_from_url(d.get("source_code_uri","")) or
@@ -4276,7 +4301,7 @@ class CratesAdapter(BaseAdapter):
                     elif users:
                         m = _m_user(users[0].get("login","—"))
         except: pass
-        c            = check_vuln(pkg,"crates.io")
+        c            = check_vuln(pkg, "crates.io", v)
         last_updated = cr.get("updated_at","") or "—"
         # Country lookup → real GitHub org from repository / homepage
         _gh = (_gh_owner_from_url(cr.get("repository","")) or
@@ -4334,7 +4359,7 @@ class PackagistAdapter(BaseAdapter):
         last_updated = "—"
         if stables and stables[0] in all_ver:
             last_updated = all_ver[stables[0]].get("time","") or "—"
-        c = check_vuln(full,"Packagist")
+        c = check_vuln(full, "Packagist", v)
         # Country lookup → real GitHub org from repository URL
         _gh = _gh_owner_from_url(pk.get("repository",""))
         # Library shows just the package name (clean). Vendor stays in Maintainer.
@@ -4475,7 +4500,7 @@ class MavenAdapter(BaseAdapter):
         g    = d.get("g", "")
         a_id = d.get("a", "")
         m    = _m_org(g)
-        c    = check_vuln(full, "Maven")
+        c    = check_vuln(full, "Maven", latest_ver)
         desc = f"{g}  ·  {a_id}"
         ts   = d.get("timestamp", 0)
         last_updated = (datetime.datetime.utcfromtimestamp(ts / 1000).strftime("%Y-%m-%d")
@@ -4630,7 +4655,7 @@ class NuGetAdapter(BaseAdapter):
         #    fetch the repo's authoritative SPDX license from the GitHub API
         lic_raw = d.get("licenseExpression","") or d.get("licenseUrl","") or "—"
         lic     = _lic(lic_raw)
-        c       = check_vuln(d.get("id",pkg),"NuGet")
+        c       = check_vuln(d.get("id",pkg), "NuGet", ver)
         pid     = d.get("id", pkg)
         ver     = d.get("version", "N/A")
         # Country lookup → real GitHub org from projectUrl
@@ -4698,7 +4723,7 @@ class GoModulesAdapter(BaseAdapter):
         parts = pkg.split("/")
         owner = parts[1] if len(parts) >= 2 else "—"
         m     = _m_user(owner)
-        c     = check_vuln(pkg,"Go")
+        c     = check_vuln(pkg, "Go", v)
         # For Go modules with path "github.com/owner/repo", owner is the real
         # GitHub org → ideal for country lookup
         _gh = owner if (len(parts) >= 3 and parts[0].lower() == "github.com") else ""
