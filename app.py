@@ -4491,7 +4491,6 @@ class MavenAdapter(BaseAdapter):
         g    = d.get("g", "")
         a_id = d.get("a", "")
         m    = _m_org(g)
-        c    = check_vuln(full, "Maven", latest_ver)
         desc = f"{g}  ·  {a_id}"
         ts   = d.get("timestamp", 0)
         last_updated = (datetime.datetime.utcfromtimestamp(ts / 1000).strftime("%Y-%m-%d")
@@ -4558,6 +4557,7 @@ class MavenAdapter(BaseAdapter):
 
         # Library column shows just the artifact name (clean) — full coordinates
         # are still preserved in Maintainer ("Org · {g}") and Description ("{g} · {a}")
+        c = check_vuln(full, "Maven", latest_ver)
         return _row(a_id, "Maven Central", latest_ver,
                     desc, "Apache-2.0", 0, m, c,
                     f"https://mvnrepository.com/artifact/{g}/{a_id}",
@@ -4646,9 +4646,9 @@ class NuGetAdapter(BaseAdapter):
         #    fetch the repo's authoritative SPDX license from the GitHub API
         lic_raw = d.get("licenseExpression","") or d.get("licenseUrl","") or "—"
         lic     = _lic(lic_raw)
-        c       = check_vuln(d.get("id",pkg), "NuGet", ver)
         pid     = d.get("id", pkg)
         ver     = d.get("version", "N/A")
+        c       = check_vuln(pid, "NuGet", ver)
         # Country lookup → real GitHub org from projectUrl
         _gh = _gh_owner_from_url(d.get("projectUrl",""))
         # GitHub license fallback when NuGet's data is mangled / missing
