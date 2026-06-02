@@ -2108,22 +2108,27 @@ def _check_cve(row, context):
 
 # ─── Check 4 — Bus Factor ────────────────────────────────────────────────────
 def _check_bus_factor(row, context):
-    """≤5 maintainers + high downloads = supply-chain single point of failure."""
+    """≤5 maintainers = risk regardless of downloads. Downloads only escalates severity."""
     sm = row.get("Single Maintainer", "") or _single_maintainer_risk(
         row.get("Maintainer", ""), row.get("Downloads", ""))
     downloads = _parse_download_num(row.get("Downloads", ""))
+    dl_str = row.get("Downloads", "") or "unknown downloads"
     if "Bus Factor" in sm:
         if downloads >= 10_000_000:
             return {"severity": "critical",
                     "label":    "Bus Factor: ≤5 maint + 10M+ dl",
-                    "details":  f"≤5 maintainers for a package with {row.get('Downloads','')} downloads — left-pad/event-stream risk"}
+                    "details":  f"≤5 maintainers for a package with {dl_str} downloads — left-pad/event-stream risk"}
         return {"severity": "high",
                 "label":    "Bus Factor (≤5 maintainers)",
-                "details":  f"≤5 maintainers + {row.get('Downloads','')} downloads"}
+                "details":  f"≤5 maintainers with {dl_str} — single point of failure risk"}
     if "Solo" in sm:
+        if downloads >= 1_000_000:
+            return {"severity": "high",
+                    "label":    "Solo maintainer (1M+ dl)",
+                    "details":  f"Single/small team maintaining a package with {dl_str} downloads"}
         return {"severity": "medium",
-                "label":    "Small team (moderate dl)",
-                "details":  f"≤5 maintainers with {row.get('Downloads','')} downloads"}
+                "label":    "Solo/small maintainer team",
+                "details":  f"≤5 maintainers — risk exists even without download data"}
     return {"severity": "pass",
             "label":    "Healthy maintainer count",
             "details":  "More than 5 maintainers with publish rights"}
@@ -2637,8 +2642,7 @@ def _parse_download_num(s) -> int:
 
 def _single_maintainer_risk(maintainer: str, downloads) -> str:
     """
-    Flag packages with ≤5 maintainers AND ≥1M downloads.
-    Classic supply-chain risk pattern (cf. left-pad incident).
+    Flag packages with ≤5 maintainers — downloads only escalates severity.
     Maintainer strings encode count as '+N' suffix, e.g. 'username +3' = 4 total.
     """
     dl = _parse_download_num(downloads)
@@ -2648,10 +2652,13 @@ def _single_maintainer_risk(maintainer: str, downloads) -> str:
     _m = re.search(r'\+\s*(\d+)', s)
     count = (1 + int(_m.group(1))) if _m else (1 if s.strip() and s not in ("—", "") else 0)
 
+    if count == 0:
+        return ""  # no maintainer info at all — can't judge
+
     if 0 < count <= 5 and dl >= 1_000_000:
-        return "⚠️ Bus Factor"   # critical single point of failure
-    if 0 < count <= 5 and dl >= 100_000:
-        return "ℹ️ Solo"          # small team but moderate risk
+        return "⚠️ Bus Factor"   # high downloads → escalated risk
+    if 0 < count <= 5:
+        return "ℹ️ Solo"          # single/small team — flag regardless of downloads
     return ""
 
 def _risk_score(row) -> int:
