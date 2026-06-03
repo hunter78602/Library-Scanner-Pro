@@ -1,0 +1,61 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Registry Intelligence Platform — Packages to Monitor
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# Add any package here. Run once:
+#   python bulk_enroll.py
+#
+# After that, monitor_job.py re-checks everything daily — no UI needed.
+#
+# Supported registries:
+#   NPM, PyPI, RubyGems, NuGet, Crates.io, Maven Central, GitHub
+#
+# GitHub repos  → paste the full URL: https://github.com/owner/repo
+# Maven         → use groupId:artifactId format: com.google.guava:guava
+# Everything else → just the package name
+# ─────────────────────────────────────────────────────────────────────────────
+
+packages:
+
+  # ── JavaScript / Node.js (NPM) ──────────────────────────────────────────────
+  - name: lodash
+    registry: NPM
+
+  - name: axios
+    registry: NPM
+
+  - name: react
+    registry: NPM
+
+  - name: express
+    registry: NPM
+
+  # ── Python (PyPI) ───────────────────────────────────────────────────────────
+  - name: requests
+    registry: PyPI
+
+  - name: flask
+    registry: PyPI
+
+  - name: django
+    registry: PyPI
+
+  # ── GitHub Repositories ─────────────────────────────────────────────────────
+  - name: https://github.com/hunter78602/desktop-tutorial
+    registry: GitHub
+
+  # ── Ruby (RubyGems) ─────────────────────────────────────────────────────────
+  - name: rails
+    registry: RubyGems
+
+  # ── .NET (NuGet) ────────────────────────────────────────────────────────────
+  - name: Newtonsoft.Json
+    registry: NuGet
+
+  # ── Rust (Crates.io) ────────────────────────────────────────────────────────
+  - name: serde
+    registry: Crates.io
+
+  # ── Java (Maven Central) ────────────────────────────────────────────────────
+  - name: com.google.guava:guava
+    registry: Maven Central

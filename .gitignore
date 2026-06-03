@@ -1,3 +1,9 @@
 *
 !app.py
 !.gitignore
+!requirements.txt
+!monitor_job.py
+!bulk_enroll.py
+!packages.yaml
+!.github/
+!.github/**
