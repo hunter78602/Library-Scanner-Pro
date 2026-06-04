@@ -46,7 +46,7 @@ except ImportError:
 DATABASE_URL = os.environ.get(
     "DATABASE_URL",
     "postgresql://postgres:postgres@localhost:5432/registry_intel"
-)
+).strip()
 
 # ── Notification config (all optional) ────────────────────────────────────────
 SLACK_WEBHOOK_URL   = os.environ.get("SLACK_WEBHOOK_URL",   "")
