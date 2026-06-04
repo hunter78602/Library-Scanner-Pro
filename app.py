@@ -186,6 +186,59 @@ DATABASE_URL = os.environ.get(
     "postgresql://postgres:postgres@localhost:5432/registry_intel",
 )
 
+# ── Telegram config ────────────────────────────────────────────────────────────
+def _load_telegram_config() -> tuple:
+    token   = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+    chat_id = os.environ.get("TELEGRAM_CHAT_ID",   "")
+    try:
+        _s = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                          ".streamlit", "secrets.toml")
+        if os.path.exists(_s):
+            with open(_s, encoding="utf-8") as _f:
+                for _line in _f:
+                    _line = _line.strip()
+                    if _line.startswith("TELEGRAM_BOT_TOKEN"):
+                        v = _line.split("=", 1)[1].strip().strip('"').strip("'")
+                        if v: token = v
+                    elif _line.startswith("TELEGRAM_CHAT_ID"):
+                        v = _line.split("=", 1)[1].strip().strip('"').strip("'")
+                        if v: chat_id = v
+    except Exception:
+        pass
+    return token, chat_id
+
+_TELEGRAM_TOKEN, _TELEGRAM_CHAT_ID = _load_telegram_config()
+
+_SEV_EMOJI_TG = {"critical": "🚨", "high": "⚠️", "medium": "🔔", "info": "ℹ️"}
+_FIELD_LABEL_TG = {
+    "maintainer":   "Maintainer changed",
+    "cves":         "CVEs detected",
+    "version":      "Version changed",
+    "license":      "License changed",
+    "last_updated": "Last-updated date changed",
+}
+
+def _notify_telegram(library: str, registry: str, severity: str,
+                     field: str, old_val: str, new_val: str):
+    if not _TELEGRAM_TOKEN or not _TELEGRAM_CHAT_ID:
+        return
+    try:
+        em    = _SEV_EMOJI_TG.get(severity, "•")
+        label = _FIELD_LABEL_TG.get(field, field)
+        text  = (
+            f"{em} *{severity.upper()}* — `{library}` · {registry}\n"
+            f"*{label}*\n"
+            f"Before: `{old_val[:80]}`\n"
+            f"After:  `{new_val[:80]}`"
+        )
+        requests.post(
+            f"https://api.telegram.org/bot{_TELEGRAM_TOKEN}/sendMessage",
+            json={"chat_id": _TELEGRAM_CHAT_ID, "text": text, "parse_mode": "Markdown"},
+            timeout=6,
+        )
+    except Exception:
+        pass
+
 _pg_pool: "psycopg2.pool.ThreadedConnectionPool | None" = None
 
 def _get_pg_pool() -> "psycopg2.pool.ThreadedConnectionPool":
@@ -517,6 +570,285 @@ def _migrate_cache():
 
 
 _migrate_cache()
+
+# ══════════════════════════════════════════════════════════════════════════════
+# MONITORING PIPELINE  — DB is the engine, UI is read-only display
+# ══════════════════════════════════════════════════════════════════════════════
+
+_MONITOR_FIELD_SEVERITY = {
+    "cves":         "critical",
+    "maintainer":   "high",
+    "last_updated": "high",
+    "license":      "medium",
+    "version":      "info",
+}
+
+
+def _monitor_upsert(library: str, registry: str):
+    try:
+        with _pg_conn() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                """INSERT INTO monitored_packages (library, registry, enrolled_at, next_check_at)
+                   VALUES (%s, %s, NOW(), NOW() + INTERVAL '6 hours')
+                   ON CONFLICT (library, registry) DO NOTHING""",
+                (library, registry),
+            )
+            cur.close()
+    except Exception:
+        pass
+
+
+def _monitor_update_checked(library: str, registry: str):
+    try:
+        with _pg_conn() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                """UPDATE monitored_packages
+                   SET last_checked  = NOW(),
+                       next_check_at = NOW() + INTERVAL '6 hours'
+                   WHERE library = %s AND registry = %s""",
+                (library, registry),
+            )
+            cur.close()
+    except Exception:
+        pass
+
+
+def _snapshot_get_latest(library: str, registry: str) -> "dict | None":
+    try:
+        with _pg_conn() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                """SELECT snapshot FROM package_snapshots
+                   WHERE library = %s AND registry = %s
+                   ORDER BY snapped_at DESC LIMIT 1""",
+                (library, registry),
+            )
+            row = cur.fetchone()
+            cur.close()
+        return row[0] if row else None
+    except Exception:
+        return None
+
+
+def _snapshot_insert(library: str, registry: str, snapshot: dict):
+    try:
+        with _pg_conn() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                """INSERT INTO package_snapshots (library, registry, snapped_at, snapshot)
+                   VALUES (%s, %s, NOW(), %s::jsonb)""",
+                (library, registry, json.dumps(snapshot, default=str)),
+            )
+            cur.execute(
+                """DELETE FROM package_snapshots
+                   WHERE library = %s AND registry = %s
+                     AND id NOT IN (
+                         SELECT id FROM package_snapshots
+                         WHERE library = %s AND registry = %s
+                         ORDER BY snapped_at DESC LIMIT 10
+                     )""",
+                (library, registry, library, registry),
+            )
+            cur.close()
+    except Exception:
+        pass
+
+
+_EMPTY_VALS = {"", "—", "N/A", "None", "null", "n/a", "unknown"}
+
+def _normalise_for_diff(field: str, val: str) -> str:
+    val = val.strip()
+    if field == "version":
+        val = re.sub(r'\s*\(.*?\)', '', val).strip()
+        val = re.sub(r'^v(?=\d)', '', val)
+        if val == "0.0.0":
+            val = ""
+    elif field == "maintainer":
+        if '·' in val:
+            val = val.split('·', 1)[1].strip()
+    return val
+
+def _is_noise(field: str, old_val: str, new_val: str) -> bool:
+    if old_val in _EMPTY_VALS:
+        return True
+    if new_val in _EMPTY_VALS:
+        return True
+    if field == "version" and re.search(r'\(yanked\)', old_val, re.IGNORECASE):
+        return True
+    if _normalise_for_diff(field, old_val) == _normalise_for_diff(field, new_val):
+        return True
+    if field == "maintainer":
+        n = new_val.strip()
+        if n in ("User", "Org", "User ·", "Org ·"):
+            return True
+        if n.endswith(("· None", "· —", "· N/A", "· null")):
+            return True
+    if field == "cves":
+        if not re.search(r'CVE-\d{4}-\d+|GHSA-', new_val, re.IGNORECASE):
+            return True
+    return False
+
+
+def _diff_and_alert(library: str, registry: str, old_snap: dict, new_snap: dict):
+    _old_src = old_snap.get("source", "")
+    _new_src = new_snap.get("source", "")
+    _source_changed = bool(_old_src and _new_src and _old_src != _new_src)
+    _fields = (
+        {k: v for k, v in _MONITOR_FIELD_SEVERITY.items() if k == "cves"}
+        if _source_changed else _MONITOR_FIELD_SEVERITY
+    )
+    alerts = []
+    for field, severity in _fields.items():
+        old_val = str(old_snap.get(field, "") or "")
+        new_val = str(new_snap.get(field, "") or "")
+        if old_val == new_val:
+            continue
+        if new_val in _EMPTY_VALS:
+            continue
+        if _is_noise(field, old_val, new_val):
+            continue
+        alerts.append((severity, field, old_val, new_val))
+    if not alerts:
+        return
+    try:
+        with _pg_conn() as conn:
+            cur = conn.cursor()
+            for sev, fld, old_v, new_v in alerts:
+                cur.execute(
+                    """INSERT INTO package_alerts
+                       (library, registry, detected_at, severity, field, old_value, new_value)
+                       VALUES (%s, %s, NOW(), %s, %s, %s, %s)""",
+                    (library, registry, sev, fld, old_v, new_v),
+                )
+                _notify_telegram(library, registry, sev, fld, old_v, new_v)
+            cur.close()
+    except Exception:
+        pass
+
+
+def _pipeline_ingest(audit_rows: list):
+    for ar in audit_rows:
+        library  = ar.get("Library", "")
+        registry = ar.get("Registry", "")
+        if not library or not registry:
+            continue
+        row_data = ar.get("_row_data") or ar
+        snapshot = {
+            "version":      row_data.get("Version",      "N/A"),
+            "maintainer":   row_data.get("Maintainer",   "—"),
+            "cves":         row_data.get("CVEs",         "—"),
+            "license":      row_data.get("License",      "—"),
+            "last_updated": row_data.get("Last Updated", "—"),
+            "downloads":    row_data.get("Downloads",    "—"),
+            "source":       row_data.get("Repo",         ""),
+        }
+        _monitor_upsert(library, registry)
+        old_snap = _snapshot_get_latest(library, registry)
+        if old_snap:
+            if "source" not in old_snap:
+                try:
+                    with _pg_conn() as _conn:
+                        _c = _conn.cursor()
+                        _c.execute(
+                            """DELETE FROM package_alerts
+                               WHERE library = %s AND registry = %s
+                                 AND field   <> 'cves'
+                                 AND detected_at >= NOW() - INTERVAL '48 hours'""",
+                            (library, registry)
+                        )
+                        _c.close()
+                except Exception:
+                    pass
+                old_snap = None
+            if old_snap:
+                _diff_and_alert(library, registry, old_snap, snapshot)
+        _snapshot_insert(library, registry, snapshot)
+
+
+def _get_due_packages() -> list:
+    try:
+        with _pg_conn() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                """SELECT library, registry FROM monitored_packages
+                   WHERE next_check_at <= NOW()
+                   ORDER BY next_check_at ASC"""
+            )
+            rows = cur.fetchall()
+            cur.close()
+        return [(r[0], r[1]) for r in rows]
+    except Exception:
+        return []
+
+
+def _alerts_get_all(limit: int = 200) -> list:
+    try:
+        with _pg_conn() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                """SELECT id, library, registry, detected_at, severity,
+                          field, old_value, new_value, is_read
+                   FROM package_alerts
+                   WHERE
+                     old_value NOT IN ('', '--', 'N/A', 'None', 'null', 'unknown')
+                     AND new_value NOT IN ('', '--', 'N/A', 'None', 'null', 'unknown')
+                     AND NOT (field = 'maintainer'
+                              AND new_value IN ('User', 'Org', 'User ·', 'Org ·'))
+                     AND NOT (field = 'cves'
+                              AND new_value !~ '(CVE-[0-9]{4}-[0-9]+|GHSA-)')
+                     AND NOT (field = 'version'
+                              AND old_value IN ('N/A', '--', ''))
+                   ORDER BY detected_at DESC
+                   LIMIT %s""",
+                (limit,),
+            )
+            cols = [d[0] for d in cur.description]
+            rows = [dict(zip(cols, r)) for r in cur.fetchall()]
+            cur.close()
+        clean = []
+        for row in rows:
+            if not _is_noise(row.get("field",""), row.get("old_value","") or "", row.get("new_value","") or ""):
+                clean.append(row)
+        return clean
+    except Exception:
+        return []
+
+
+def _alerts_mark_all_read():
+    try:
+        with _pg_conn() as conn:
+            cur = conn.cursor()
+            cur.execute("UPDATE package_alerts SET is_read = TRUE WHERE is_read = FALSE")
+            cur.close()
+    except Exception:
+        pass
+
+
+def _monitored_get_all() -> list:
+    try:
+        with _pg_conn() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                """SELECT m.library, m.registry,
+                          m.enrolled_at, m.last_checked, m.next_check_at,
+                          s.snapshot, s.snapped_at
+                   FROM monitored_packages m
+                   LEFT JOIN LATERAL (
+                       SELECT snapshot, snapped_at
+                       FROM package_snapshots
+                       WHERE library = m.library AND registry = m.registry
+                       ORDER BY snapped_at DESC LIMIT 1
+                   ) s ON TRUE
+                   ORDER BY m.library ASC"""
+            )
+            cols = [d[0] for d in cur.description]
+            rows = [dict(zip(cols, r)) for r in cur.fetchall()]
+            cur.close()
+        return rows
+    except Exception:
+        return []
 
 # ── Utilities ──────────────────────────────────────────────────────────────────
 def _exact_match(q, name):
@@ -8951,3 +9283,181 @@ if "scan_data" in st.session_state:
                     f'<span style="color:#4a6580"> — </span>'
                     f'<span style="color:#94a3b8">{short_msg[:200]}</span></div>',
                     unsafe_allow_html=True)
+
+# ══════════════════════════════════════════════════════════════════════════════
+# MONITORING PIPELINE DASHBOARD  — always visible, DB-backed, no scan required
+# ══════════════════════════════════════════════════════════════════════════════
+
+if not st.session_state.get("_monitor_checked"):
+    st.session_state["_monitor_checked"] = True
+    try:
+        _due = _get_due_packages()
+        for _bg_lib, _bg_reg in _due[:10]:
+            try:
+                _bg_results, _ = run_audit(_bg_lib)
+                for _bgrow in _bg_results:
+                    if _bgrow.get("Registry", "") == _bg_reg:
+                        _bg_snap = {
+                            "version":      _bgrow.get("Version",      "N/A"),
+                            "maintainer":   _bgrow.get("Maintainer",   "—"),
+                            "cves":         _bgrow.get("CVEs",         "—"),
+                            "license":      _bgrow.get("License",      "—"),
+                            "last_updated": _bgrow.get("Last Updated", "—"),
+                            "downloads":    _bgrow.get("Downloads",    "—"),
+                            "source":       _bgrow.get("Repo",         ""),
+                        }
+                        _old = _snapshot_get_latest(_bg_lib, _bg_reg)
+                        if _old:
+                            _diff_and_alert(_bg_lib, _bg_reg, _old, _bg_snap)
+                        _snapshot_insert(_bg_lib, _bg_reg, _bg_snap)
+                        _monitor_update_checked(_bg_lib, _bg_reg)
+                        break
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+st.markdown("---")
+
+_dash_col1, _dash_col2, _dash_col3 = st.columns([4, 1.5, 1.5])
+with _dash_col1:
+    st.markdown("### 🔍 Monitoring Dashboard")
+    st.caption(
+        "🗄️ **DB-driven** — data flows from `bulk_enroll.py` + `monitor_job.py`. "
+        "No UI scan needed."
+    )
+with _dash_col2:
+    if st.button("🔄  Refresh", key="_dash_refresh", use_container_width=True):
+        st.rerun()
+with _dash_col3:
+    _auto_refresh = st.toggle("⏱ Auto-refresh", key="_auto_refresh", value=False)
+
+if _auto_refresh:
+    import time as _time
+    _last_refresh = st.session_state.get("_last_refresh_ts", 0)
+    _now_ts       = _time.time()
+    if _now_ts - _last_refresh >= 30:
+        st.session_state["_last_refresh_ts"] = _now_ts
+        _time.sleep(1)
+        st.rerun()
+    else:
+        _secs_left = int(30 - (_now_ts - _last_refresh))
+        st.caption(f"⏱ Next refresh in {_secs_left}s")
+
+_mon_alerts_tab, _mon_packages_tab = st.tabs(["🔔  Alerts", "📦  Monitored Packages"])
+
+with _mon_alerts_tab:
+    _all_alerts = _alerts_get_all(limit=200)
+    _unread_cnt = sum(1 for a in _all_alerts if not a["is_read"])
+
+    _col_a1, _col_a2 = st.columns([5, 1])
+    with _col_a1:
+        _last_ts = datetime.datetime.utcnow().strftime("%H:%M:%S UTC")
+        st.markdown(
+            f"**{len(_all_alerts)} alerts** stored · "
+            f"**{_unread_cnt} unread** · "
+            f"<span style='color:#64748b;font-size:0.78rem'>as of {_last_ts}</span>",
+            unsafe_allow_html=True
+        )
+    with _col_a2:
+        if _unread_cnt and st.button("✅  Mark all read", key="_mark_all_read"):
+            _alerts_mark_all_read()
+            st.rerun()
+
+    if not _all_alerts:
+        st.info(
+            "No alerts yet. Alerts appear automatically when a monitored package "
+            "changes its version, maintainer, CVEs, license, or last-updated date.",
+            icon="ℹ️",
+        )
+    else:
+        _SEV_COLOR = {
+            "critical": "#ef4444", "high": "#f97316",
+            "medium": "#eab308",   "info": "#3b82f6",
+        }
+        _FIELD_LABEL = {
+            "version":      "Version changed",
+            "maintainer":   "Maintainer changed",
+            "cves":         "CVEs changed",
+            "license":      "License changed",
+            "last_updated": "Last-updated date changed",
+        }
+        for _alert in _all_alerts:
+            _sev        = _alert.get("severity", "info")
+            _fld        = _alert.get("field", "")
+            _lib        = _alert.get("library", "")
+            _reg        = _alert.get("registry", "")
+            _old_v      = _alert.get("old_value", "") or "—"
+            _new_v      = _alert.get("new_value", "") or "—"
+            _det        = _alert.get("detected_at")
+            _det_s      = str(_det)[:16].replace("T", " ") if _det else "—"
+            _read       = _alert.get("is_read", False)
+            _border_col = _SEV_COLOR.get(_sev, "#3b82f6")
+            _alpha      = "0.45" if _read else "1"
+            st.markdown(
+                f'<div style="background:#0d1b2a;border:1px solid #1e3a5f;'
+                f'border-left:4px solid {_border_col};border-radius:8px;'
+                f'padding:0.55rem 0.85rem;margin-bottom:0.45rem;opacity:{_alpha}">'
+                f'<span style="color:{_border_col};font-weight:700;font-size:0.82rem">'
+                f'{_sev.upper()}</span>'
+                f'<span style="color:#94a3b8;font-size:0.78rem;margin-left:0.6rem">{_det_s}</span>'
+                f'<br><span style="color:#e2e8f0;font-size:0.88rem">'
+                f'<b>{_lib}</b> · {_reg}</span>'
+                f'<br><span style="color:#94a3b8;font-size:0.8rem">'
+                f'{_FIELD_LABEL.get(_fld, _fld)}</span>'
+                f'<br><span style="color:#64748b;font-size:0.77rem">'
+                f'<b>Before:</b> {_old_v[:120]} &nbsp;→&nbsp; '
+                f'<b>After:</b> <span style="color:#e2e8f0">{_new_v[:120]}</span></span>'
+                f'</div>',
+                unsafe_allow_html=True,
+            )
+
+with _mon_packages_tab:
+    _all_monitored = _monitored_get_all()
+
+    if not _all_monitored:
+        st.info(
+            "No packages enrolled yet. Every package you scan is automatically "
+            "enrolled in weekly monitoring. Run a scan to get started.",
+            icon="ℹ️",
+        )
+    else:
+        st.caption(
+            f"{len(_all_monitored)} package(s) under weekly monitoring. "
+            "Re-checks happen automatically in the background when you open the app."
+        )
+        _mon_rows = []
+        for _mp in _all_monitored:
+            _snap     = _mp.get("snapshot") or {}
+            _enrolled = str(_mp.get("enrolled_at",   "") or "")[:10]
+            _checked  = str(_mp.get("last_checked",  "") or "—")[:16].replace("T", " ")
+            _next_chk = str(_mp.get("next_check_at", "") or "—")[:16].replace("T", " ")
+            _mon_rows.append({
+                "Library":      _mp.get("library",  ""),
+                "Registry":     _mp.get("registry", ""),
+                "Enrolled":     _enrolled,
+                "Last Checked": _checked,
+                "Next Check":   _next_chk,
+                "Version":      _snap.get("version",    "—"),
+                "Maintainer":   _snap.get("maintainer", "—"),
+                "CVEs":         _snap.get("cves",       "—"),
+                "License":      _snap.get("license",    "—"),
+            })
+        _mon_df = pd.DataFrame(_mon_rows)
+        st.dataframe(
+            _mon_df,
+            use_container_width=True,
+            hide_index=True,
+            height=min(56 + 38 * len(_mon_df), 640),
+            column_config={
+                "Library":      st.column_config.TextColumn("Library",      width="medium"),
+                "Registry":     st.column_config.TextColumn("Registry",     width="small"),
+                "Enrolled":     st.column_config.TextColumn("Enrolled",     width="small"),
+                "Last Checked": st.column_config.TextColumn("Last Checked", width="medium"),
+                "Next Check":   st.column_config.TextColumn("Next Check",   width="medium"),
+                "Version":      st.column_config.TextColumn("Version",      width="small"),
+                "Maintainer":   st.column_config.TextColumn("Maintainer",   width="medium"),
+                "CVEs":         st.column_config.TextColumn("CVEs",         width="small"),
+                "License":      st.column_config.TextColumn("License",      width="small"),
+            },
+        )
