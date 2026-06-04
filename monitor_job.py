@@ -260,7 +260,7 @@ def update_checked(library, registry):
             cur.execute(
                 """UPDATE monitored_packages
                    SET last_checked  = NOW(),
-                       next_check_at = NOW() + INTERVAL '1 day'
+                       next_check_at = NOW() + INTERVAL '6 hours'
                    WHERE library = %s AND registry = %s""",
                 (library, registry)
             )
