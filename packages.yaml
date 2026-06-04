@@ -59,3 +59,552 @@ packages:
   # ── Java (Maven Central) ────────────────────────────────────────────────────
   - name: com.google.guava:guava
     registry: Maven Central
+
+  - name: jquery-migrate-rails
+    registry: RubyGems
+
+  - name: jquery-migrate
+    registry: Maven Central
+
+  - name: @types/jquery-migrate
+    registry: NPM
+
+  - name: jquery-migrate
+    registry: Packagist
+
+  - name: jQuery.Migrate
+    registry: NuGet
+
+  - name: jquery-ui-rails
+    registry: RubyGems
+
+  - name: jqueryui
+    registry: Packagist
+
+  - name: jquery-ui
+    registry: Maven Central
+
+  - name: jquery-ui-touch-punch
+    registry: NPM
+
+  - name: jQuery.UI.Combined
+    registry: NuGet
+
+  - name: lodash
+    registry: NuGet
+
+  - name: lodash
+    registry: Maven Central
+
+  - name: jquery
+    registry: NPM
+
+  - name: jQuery
+    registry: NuGet
+
+  - name: jQuery
+    registry: Maven Central
+
+  - name: Moment.js
+    registry: NuGet
+
+  - name: moment
+    registry: NPM
+
+  - name: underscore.js
+    registry: NuGet
+
+  - name: underscore
+    registry: NPM
+
+  - name: d3
+    registry: NPM
+
+  - name: d3
+    registry: NuGet
+
+  - name: D3
+    registry: Maven Central
+
+  - name: d3
+    registry: Packagist
+
+  - name: three.js
+    registry: Packagist
+
+  - name: three.js
+    registry: Maven Central
+
+  - name: three
+    registry: NPM
+
+  - name: Chart.js
+    registry: NuGet
+
+  - name: chart.js
+    registry: NPM
+
+  - name: chart.js
+    registry: Maven Central
+
+  - name: Hammer.js
+    registry: NuGet
+
+  - name: socket.io
+    registry: NPM
+
+  - name: socket.io-parser
+    registry: Maven Central
+
+  - name: zepto
+    registry: RubyGems
+
+  - name: zepto
+    registry: NPM
+
+  - name: zepto
+    registry: NuGet
+
+  - name: zepto
+    registry: Maven Central
+
+  - name: closure-library
+    registry: Maven Central
+
+  - name: Closure_Library_Zip
+    registry: NuGet
+
+  - name: prototype
+    registry: RubyGems
+
+  - name: prototype
+    registry: NPM
+
+  - name: prototype-taglib
+    registry: Maven Central
+
+  - name: knockout
+    registry: NPM
+
+  - name: Backbone.js
+    registry: NuGet
+
+  - name: backbone-js
+    registry: Maven Central
+
+  - name: backbone
+    registry: NPM
+
+  - name: marked
+    registry: RubyGems
+
+  - name: marked
+    registry: NPM
+
+  - name: marked
+    registry: Homebrew
+
+  - name: Marked
+    registry: PyPI
+
+  - name: Marked
+    registry: Crates.io
+
+  - name: marked
+    registry: Maven Central
+
+  - name: core-js
+    registry: NPM
+
+  - name: core-js
+    registry: Maven Central
+
+  - name: modernizr
+    registry: WordPress Plugins
+
+  - name: modernizr
+    registry: NPM
+
+  - name: Modernizr
+    registry: NuGet
+
+  - name: modernizr
+    registry: Packagist
+
+  - name: modernizr
+    registry: Maven Central
+
+  - name: zone.js
+    registry: NPM
+
+  - name: zone.js
+    registry: Maven Central
+
+  - name: clipboard
+    registry: NPM
+
+  - name: clipboard.js
+    registry: Maven Central
+
+  - name: lazysizes
+    registry: WordPress Plugins
+
+  - name: lazysizes
+    registry: NPM
+
+  - name: lazysizes
+    registry: Maven Central
+
+  - name: dropzone
+    registry: RubyGems
+
+  - name: dropzone
+    registry: NPM
+
+  - name: Dropzone
+    registry: Crates.io
+
+  - name: dropzone
+    registry: Homebrew
+
+  - name: dropzone
+    registry: NuGet
+
+  - name: dropzone
+    registry: Maven Central
+
+  - name: aos
+    registry: RubyGems
+
+  - name: aos
+    registry: NPM
+
+  - name: aos-commons
+    registry: Maven Central
+
+  - name: slick
+    registry: RubyGems
+
+  - name: Slick
+    registry: Crates.io
+
+  - name: slick-carousel
+    registry: NPM
+
+  - name: Slick
+    registry: NuGet
+
+  - name: Slick
+    registry: PyPI
+
+  - name: Slick
+    registry: Maven Central
+
+  - name: swiper
+    registry: NPM
+
+  - name: swiper
+    registry: Packagist
+
+  - name: swiper
+    registry: Maven Central
+
+  - name: popper
+    registry: WordPress Plugins
+
+  - name: popper
+    registry: RubyGems
+
+  - name: @popperjs/core
+    registry: NPM
+
+  - name: popper.js
+    registry: Maven Central
+
+  - name: select2
+    registry: NPM
+
+  - name: select2
+    registry: Packagist
+
+  - name: wicketstuff-select2-parent
+    registry: Maven Central
+
+  - name: splide
+    registry: NPM
+
+  - name: splidejs__splide
+    registry: Maven Central
+
+  - name: lightbox2
+    registry: NPM
+
+  - name: lightbox2-parent
+    registry: Maven Central
+
+  - name: lottiefiles
+    registry: WordPress Plugins
+
+  - name: lottiefiles__lottie-player
+    registry: Maven Central
+
+  - name: fancybox
+    registry: NPM
+
+  - name: Fancybox
+    registry: NuGet
+
+  - name: fancybox
+    registry: Maven Central
+
+  - name: PDF.js
+    registry: NuGet
+
+  - name: pdf-js
+    registry: Maven Central
+
+  - name: pdf.js
+    registry: NPM
+
+  - name: ckeditor
+    registry: RubyGems
+
+  - name: CKEditor
+    registry: NuGet
+
+  - name: ckeditor
+    registry: NPM
+
+  - name: ckeditor__ckeditor5-core
+    registry: Maven Central
+
+  - name: prism
+    registry: WordPress Plugins
+
+  - name: prism
+    registry: RubyGems
+
+  - name: prismjs
+    registry: NPM
+
+  - name: Prism
+    registry: PyPI
+
+  - name: Prism
+    registry: Winget
+
+  - name: prism
+    registry: Homebrew
+
+  - name: prism
+    registry: Maven Central
+
+  - name: prism
+    registry: Packagist
+
+  - name: CodeMirror
+    registry: NuGet
+
+  - name: codemirror
+    registry: NPM
+
+  - name: codemirror-graphql
+    registry: Maven Central
+
+  - name: froala-editor
+    registry: NPM
+
+  - name: froala-editor-sdk
+    registry: RubyGems
+
+  - name: froala-editor-bundle
+    registry: Packagist
+
+  - name: FroalaEditor
+    registry: NuGet
+
+  - name: quill
+    registry: RubyGems
+
+  - name: quill
+    registry: Homebrew
+
+  - name: quill
+    registry: NPM
+
+  - name: Quill
+    registry: Crates.io
+
+  - name: quill-engine_2.13
+    registry: Maven Central
+
+  - name: fullcalendar
+    registry: WordPress Plugins
+
+  - name: fullcalendar
+    registry: RubyGems
+
+  - name: fullcalendar
+    registry: NPM
+
+  - name: fullcalendar
+    registry: NuGet
+
+  - name: fullcalendar
+    registry: Packagist
+
+  - name: fullcalendar
+    registry: Maven Central
+
+  - name: datatables
+    registry: RubyGems
+
+  - name: DataTables
+    registry: PyPI
+
+  - name: datatables
+    registry: NPM
+
+  - name: datatables-parent
+    registry: Maven Central
+
+  - name: toastr
+    registry: NPM
+
+  - name: toastr
+    registry: NuGet
+
+  - name: toastr
+    registry: Maven Central
+
+  - name: toastr
+    registry: Packagist
+
+  - name: lit-html
+    registry: NPM
+
+  - name: lit-html
+    registry: Crates.io
+
+  - name: lit-html
+    registry: Maven Central
+
+  - name: lit-element
+    registry: NPM
+
+  - name: lit-element
+    registry: Maven Central
+
+  - name: Lucide
+    registry: PyPI
+
+  - name: lucide
+    registry: NPM
+
+  - name: lucide-react
+    registry: Maven Central
+
+  - name: gsap
+    registry: NPM
+
+  - name: gsap-js
+    registry: Maven Central
+
+  - name: framer-motion
+    registry: NPM
+
+  - name: framer-motion
+    registry: Maven Central
+
+  - name: bootstrap
+    registry: WordPress Plugins
+
+  - name: bootstrap
+    registry: RubyGems
+
+  - name: bootstrap
+    registry: NPM
+
+  - name: Bootstrap
+    registry: PyPI
+
+  - name: Bootstrap
+    registry: Crates.io
+
+  - name: bootstrap
+    registry: NuGet
+
+  - name: bootstrap
+    registry: Packagist
+
+  - name: bootstrap-web-parent
+    registry: Maven Central
+
+  - name: animate.css
+    registry: NPM
+
+  - name: animate.css
+    registry: NuGet
+
+  - name: animate.css
+    registry: Maven Central
+
+  - name: bulma
+    registry: RubyGems
+
+  - name: bulma
+    registry: NPM
+
+  - name: Bulma
+    registry: PyPI
+
+  - name: bulma
+    registry: Maven Central
+
+  - name: Emotion
+    registry: PyPI
+
+  - name: emotion
+    registry: NPM
+
+  - name: emotion__cache
+    registry: Maven Central
+
+  - name: Emotion
+    registry: NuGet
+
+  - name: styled-components
+    registry: NPM
+
+  - name: styled-components
+    registry: Crates.io
+
+  - name: styled-components
+    registry: Maven Central
+
+  - name: @chakra-ui/react
+    registry: NPM
+
+  - name: chakra-ui__react-use-event-listener
+    registry: Maven Central
+
+  - name: @mui/material
+    registry: NPM
+
+  - name: mui__material
+    registry: Maven Central
+
+  - name: radix-ui__react-toast
+    registry: Maven Central
+
+  - name: radix-ui
+    registry: NPM
+
+  - name: element-ui-for-gov
+    registry: NPM
+
+  - name: element-ui-helper
+    registry: VS Code Marketplace
+
+  - name: element-ui
+    registry: Maven Central
