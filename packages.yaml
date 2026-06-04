@@ -66,7 +66,7 @@ packages:
   - name: jquery-migrate
     registry: Maven Central
 
-  - name: @types/jquery-migrate
+  - name: "@types/jquery-migrate"
     registry: NPM
 
   - name: jquery-migrate
@@ -315,7 +315,7 @@ packages:
   - name: popper
     registry: RubyGems
 
-  - name: @popperjs/core
+  - name: "@popperjs/core"
     registry: NPM
 
   - name: popper.js
@@ -582,13 +582,13 @@ packages:
   - name: styled-components
     registry: Maven Central
 
-  - name: @chakra-ui/react
+  - name: "@chakra-ui/react"
     registry: NPM
 
   - name: chakra-ui__react-use-event-listener
     registry: Maven Central
 
-  - name: @mui/material
+  - name: "@mui/material"
     registry: NPM
 
   - name: mui__material
