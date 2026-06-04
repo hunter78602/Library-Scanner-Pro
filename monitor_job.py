@@ -88,8 +88,18 @@ MONITOR_FIELD_SEVERITY = {
     "maintainer":   "high",
     "last_updated": "high",
     "license":      "medium",
-    "version":      "info",
+    # version removed — routine bumps generate noise, not security signal
 }
+
+_DOMAIN_ALIASES = [
+    {"google.com", "gmail.com", "googlemail.com"},
+    {"microsoft.com", "outlook.com", "hotmail.com", "live.com"},
+    {"apple.com", "icloud.com", "me.com", "mac.com"},
+    {"facebook.com", "meta.com", "fb.com"},
+    {"amazon.com", "amazonaws.com"},
+]
+
+_GARBAGE_VERSIONS = {"xd", "test", "dummy", "placeholder", "todo", "tbd", "dev", "wip"}
 
 # ── DB helpers ─────────────────────────────────────────────────────────────────
 
@@ -203,11 +213,36 @@ def write_alerts(library, registry, old_snap, new_snap):
         if field == "version":
             if _norm_version(old_val) == _norm_version(new_val):
                 continue
+            old_v = re.sub(r'^v', '', old_val.strip().lower())
+            if old_v in _GARBAGE_VERSIONS:
+                continue
         elif field == "license":
             if _norm_license(old_val) == _norm_license(new_val):
                 continue
+            # Old license is subset of new (more permissive) — not a security event
+            old_norm = re.sub(r'[^a-z0-9]', '', old_val.lower())
+            new_norm = re.sub(r'[^a-z0-9]', '', new_val.lower())
+            if old_norm and old_norm in new_norm:
+                continue
         elif field == "maintainer":
             if _norm_maintainer(old_val) == _norm_maintainer(new_val):
+                continue
+            # First maintainer name same (format change, not real change)
+            def _first_name(s):
+                if '·' in s: s = s.split('·', 1)[1].strip()
+                s = re.sub(r'\s*\+\d+.*$', '', s).strip()
+                return s.split(',')[0].strip().lower()
+            if _first_name(old_val) == _first_name(new_val):
+                continue
+        elif field == "maintainer_email_domain":
+            old_d = old_val.lower().strip()
+            new_d = new_val.lower().strip()
+            _skip = False
+            for group in _DOMAIN_ALIASES:
+                if old_d in group and new_d in group:
+                    _skip = True
+                    break
+            if _skip:
                 continue
         elif field == "last_updated":
             # Only alert when the date shift is significant (>30 days).

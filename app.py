@@ -580,7 +580,7 @@ _MONITOR_FIELD_SEVERITY = {
     "maintainer":   "high",
     "last_updated": "high",
     "license":      "medium",
-    "version":      "info",
+    # version removed — routine bumps generate noise, not security signal
 }
 
 
@@ -658,6 +658,19 @@ def _snapshot_insert(library: str, registry: str, snapshot: dict):
 
 _EMPTY_VALS = {"", "—", "N/A", "None", "null", "n/a", "unknown"}
 
+# Corporate email domain groups — changes within a group are not hijack signals
+_DOMAIN_ALIASES = [
+    {"google.com", "gmail.com", "googlemail.com"},
+    {"microsoft.com", "outlook.com", "hotmail.com", "live.com"},
+    {"apple.com", "icloud.com", "me.com", "mac.com"},
+    {"facebook.com", "meta.com", "fb.com"},
+    {"amazon.com", "amazonaws.com"},
+]
+
+# Known garbage/test version values that should never be used as a baseline
+_GARBAGE_VERSIONS = {"xd", "test", "dummy", "placeholder", "todo", "tbd", "dev", "wip", "na", "n/a"}
+
+
 def _normalise_for_diff(field: str, val: str) -> str:
     val = val.strip()
     if field == "version":
@@ -668,15 +681,22 @@ def _normalise_for_diff(field: str, val: str) -> str:
     elif field == "maintainer":
         if '·' in val:
             val = val.split('·', 1)[1].strip()
+        val = re.sub(r'\s*\+\d+.*$', '', val).strip()
+        val = val.split(',')[0].strip().lower()
     return val
+
 
 def _is_noise(field: str, old_val: str, new_val: str) -> bool:
     if old_val in _EMPTY_VALS:
         return True
     if new_val in _EMPTY_VALS:
         return True
-    if field == "version" and re.search(r'\(yanked\)', old_val, re.IGNORECASE):
-        return True
+    if field == "version":
+        old_v = re.sub(r'^v', '', old_val.strip().lower())
+        if old_v in _GARBAGE_VERSIONS:
+            return True
+        if re.search(r'\(yanked\)', old_val, re.IGNORECASE):
+            return True
     if _normalise_for_diff(field, old_val) == _normalise_for_diff(field, new_val):
         return True
     if field == "maintainer":
@@ -687,6 +707,18 @@ def _is_noise(field: str, old_val: str, new_val: str) -> bool:
             return True
     if field == "cves":
         if not re.search(r'CVE-\d{4}-\d+|GHSA-', new_val, re.IGNORECASE):
+            return True
+    if field == "maintainer_email_domain":
+        old_d = old_val.lower().strip()
+        new_d = new_val.lower().strip()
+        for group in _DOMAIN_ALIASES:
+            if old_d in group and new_d in group:
+                return True
+    if field == "license":
+        # Old license is subset of new (more permissive) — not a security event
+        old_norm = re.sub(r'[^a-z0-9]', '', old_val.lower())
+        new_norm = re.sub(r'[^a-z0-9]', '', new_val.lower())
+        if old_norm and old_norm in new_norm:
             return True
     return False
 
@@ -792,14 +824,16 @@ def _alerts_get_all(limit: int = 200) -> list:
                           field, old_value, new_value, is_read
                    FROM package_alerts
                    WHERE
-                     old_value NOT IN ('', '--', 'N/A', 'None', 'null', 'unknown')
+                     field != 'version'
+                     AND old_value NOT IN ('', '--', 'N/A', 'None', 'null', 'unknown')
                      AND new_value NOT IN ('', '--', 'N/A', 'None', 'null', 'unknown')
                      AND NOT (field = 'maintainer'
                               AND new_value IN ('User', 'Org', 'User ·', 'Org ·'))
                      AND NOT (field = 'cves'
                               AND new_value !~ '(CVE-[0-9]{4}-[0-9]+|GHSA-)')
-                     AND NOT (field = 'version'
-                              AND old_value IN ('N/A', '--', ''))
+                     AND NOT (field = 'license'
+                              AND REGEXP_REPLACE(LOWER(old_value), '[^a-z0-9]', '', 'g') = ANY(
+                                  SELECT REGEXP_REPLACE(LOWER(new_value), '[^a-z0-9]', '', 'g')))
                    ORDER BY detected_at DESC
                    LIMIT %s""",
                 (limit,),
