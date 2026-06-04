@@ -155,6 +155,31 @@ def insert_snapshot(library, registry, snapshot):
         log(f"ERROR insert_snapshot ({library}/{registry}): {e}")
 
 
+_UNKNOWN_VALUES = {"", "—", "n/a", "none", "unknown", "noassertion", "null"}
+
+def _norm_version(v: str) -> str:
+    """Strip leading 'v' so v4.5.1 == 4.5.1."""
+    return v.lstrip("vV").strip()
+
+def _norm_license(v: str) -> str:
+    """Normalise common license synonyms to a canonical form."""
+    v = v.lower().strip()
+    v = v.replace(" ", "-").replace("_", "-")
+    # Apache synonyms
+    v = v.replace("apache-2", "apache-2.0").replace("apache2.0", "apache-2.0")
+    # MIT synonyms
+    v = v.replace("mit-license", "mit")
+    return v
+
+def _norm_maintainer(v: str) -> str:
+    """Return only the primary maintainer name, ignoring '+N' co-maintainer count."""
+    # e.g. "User · aomarks +12"  →  "user · aomarks"
+    import re as _re
+    return _re.sub(r'\s*\+\d+\s*$', '', v).strip().lower()
+
+def _is_unknown(v: str) -> bool:
+    return v.strip().lower() in _UNKNOWN_VALUES
+
 def write_alerts(library, registry, old_snap, new_snap):
     """Compare snapshots, write alerts to DB, return (count, alert_list).
 
@@ -165,7 +190,27 @@ def write_alerts(library, registry, old_snap, new_snap):
     for field, severity in MONITOR_FIELD_SEVERITY.items():
         old_val = str(old_snap.get(field, "") or "")
         new_val = str(new_snap.get(field, "") or "")
-        if old_val != new_val and new_val not in ("", "N/A", "—"):
+
+        # Skip if new value is unknown/blank — not a meaningful change
+        if _is_unknown(new_val):
+            continue
+
+        # Skip if old value was also unknown — data just being populated for first time
+        if _is_unknown(old_val):
+            continue
+
+        # Field-specific normalisation before comparing
+        if field == "version":
+            if _norm_version(old_val) == _norm_version(new_val):
+                continue
+        elif field == "license":
+            if _norm_license(old_val) == _norm_license(new_val):
+                continue
+        elif field == "maintainer":
+            if _norm_maintainer(old_val) == _norm_maintainer(new_val):
+                continue
+
+        if old_val != new_val:
             alerts.append((severity, field, old_val, new_val))
 
     if not alerts:
@@ -523,18 +568,32 @@ def notify_telegram(all_alerts):
     """Send a Telegram message via Bot API. Only runs if TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID are set."""
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID or not all_alerts:
         return
+    import html as _html
     try:
-        date  = datetime.datetime.utcnow().strftime("%Y-%m-%d")
-        count = len(all_alerts)
-        header = f"🚨 *Package Monitor Alert — {date}*\n_{count} change(s) detected_"
-        lines  = _format_alert_lines(all_alerts)
-        body   = "\n\n".join(lines)
-        text   = f"{header}\n\n{body}"
-        url    = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+        date   = datetime.datetime.utcnow().strftime("%Y-%m-%d")
+        count  = len(all_alerts)
+        header = f"🚨 <b>Package Monitor Alert — {date}</b>\n<i>{count} change(s) detected</i>"
+        _order = {"critical": 0, "high": 1, "medium": 2, "info": 3}
+        sorted_alerts = sorted(all_alerts, key=lambda a: _order.get(a[2], 9))
+        _sev_emoji = {"critical": "🚨", "high": "⚠️", "medium": "🔔", "info": "ℹ️"}
+        lines = []
+        for library, registry, sev, field, old_v, new_v in sorted_alerts:
+            emoji = _sev_emoji.get(sev, "•")
+            lib   = _html.escape(str(library))
+            reg   = _html.escape(str(registry))
+            fld   = _html.escape(str(field))
+            old   = _html.escape(str(old_v)[:60])
+            new   = _html.escape(str(new_v)[:60])
+            lines.append(
+                f"{emoji} <b>{sev.upper()}</b> — {lib} · {reg}\n"
+                f"   {fld}: <code>{old}</code> → <code>{new}</code>"
+            )
+        text = f"{header}\n\n" + "\n\n".join(lines)
+        url  = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
         r = requests.post(url, json={
             "chat_id":    TELEGRAM_CHAT_ID,
             "text":       text,
-            "parse_mode": "Markdown",
+            "parse_mode": "HTML",
         }, timeout=10)
         if r.status_code == 200:
             log("Telegram notification sent ✓")
