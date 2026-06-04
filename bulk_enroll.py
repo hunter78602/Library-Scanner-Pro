@@ -144,6 +144,32 @@ def write_enroll(library, registry, snapshot):
 
 # ── Registry fetchers ───────────────────────────────────────────────────────────
 
+def _fetch_cves(ecosystem: str, pkg: str, version: str) -> str:
+    """Query OSV.dev for known vulnerabilities. Returns CVE IDs or 'None'."""
+    if not ecosystem or not version or version in ("—", "N/A", ""):
+        return "—"
+    try:
+        r = requests.post(
+            "https://api.osv.dev/v1/query",
+            json={"version": version, "package": {"name": pkg, "ecosystem": ecosystem}},
+            timeout=10
+        )
+        if r.status_code != 200:
+            return "—"
+        vulns = r.json().get("vulns", [])
+        if not vulns:
+            return "None"
+        ids = []
+        for v in vulns[:10]:
+            aliases = v.get("aliases", [])
+            cve = next((a for a in aliases if a.startswith("CVE-")), v.get("id", ""))
+            if cve:
+                ids.append(cve)
+        return ", ".join(ids) if ids else f"{len(vulns)} vulnerabilities"
+    except Exception:
+        return "—"
+
+
 def fetch_npm(pkg):
     try:
         r = requests.get(f"https://registry.npmjs.org/{pkg.lower()}", timeout=TIMEOUT)
@@ -151,15 +177,20 @@ def fetch_npm(pkg):
         d      = r.json()
         latest = d.get("dist-tags", {}).get("latest", "")
         info   = d.get("versions", {}).get(latest, {})
-        maint  = d.get("maintainers", [{}])
-        mname  = maint[0].get("name", "—") if maint else "—"
-        tm     = d.get("time", {})
+        maints = d.get("maintainers", [])
+        if len(maints) > 1:
+            maint_str = f"User · {maints[0].get('name','—')} +{len(maints)-1}"
+        else:
+            maint_str = f"User · {maints[0].get('name','—')}" if maints else "—"
+        lic = info.get("license", "—")
+        if isinstance(lic, dict):
+            lic = lic.get("type", "—")
         return {
             "version":      latest or "N/A",
-            "maintainer":   f"User · {mname}",
-            "cves":         "—",
-            "license":      info.get("license", "—") or "—",
-            "last_updated": (tm.get(latest, "") or "")[:10] or "—",
+            "maintainer":   maint_str,
+            "cves":         _fetch_cves("npm", pkg, latest),
+            "license":      lic or "—",
+            "last_updated": (d.get("time", {}).get(latest, "") or "")[:10] or "—",
             "downloads":    "—",
             "source":       f"https://www.npmjs.com/package/{pkg.lower()}",
         }
@@ -171,13 +202,31 @@ def fetch_pypi(pkg):
     try:
         r = requests.get(f"https://pypi.org/pypi/{pkg}/json", timeout=TIMEOUT)
         if r.status_code != 200: return None
-        info = r.json().get("info", {})
+        d       = r.json()
+        info    = d.get("info", {})
+        version = info.get("version", "N/A")
+        maint   = (info.get("maintainer") or info.get("author") or "").strip()
+        if not maint or maint.lower() in ("none", "null", ""):
+            maint = "—"
+        last_updated = "—"
+        release_files = d.get("releases", {}).get(version, [])
+        if release_files:
+            t = release_files[-1].get("upload_time", "")
+            last_updated = t[:10] if t else "—"
+        lic = (info.get("license") or "").strip()
+        if not lic or lic.lower() in ("unknown", "none", ""):
+            for clf in info.get("classifiers", []):
+                if clf.startswith("License ::"):
+                    parts = clf.split(" :: ")
+                    if len(parts) >= 3:
+                        lic = parts[-1].strip()
+                        break
         return {
-            "version":      info.get("version", "N/A"),
-            "maintainer":   f"User · {info.get('author', '—')}",
-            "cves":         "—",
-            "license":      info.get("license", "—") or "—",
-            "last_updated": "—",
+            "version":      version,
+            "maintainer":   f"User · {maint}" if maint != "—" else "—",
+            "cves":         _fetch_cves("PyPI", pkg, version),
+            "license":      lic or "—",
+            "last_updated": last_updated,
             "downloads":    "—",
             "source":       f"https://pypi.org/project/{pkg}/",
         }
@@ -189,13 +238,30 @@ def fetch_rubygems(pkg):
     try:
         r = requests.get(f"https://rubygems.org/api/v1/gems/{pkg}.json", timeout=TIMEOUT)
         if r.status_code != 200: return None
-        d = r.json()
+        d       = r.json()
+        version = d.get("version", "N/A")
+        maint   = "—"
+        try:
+            ro = requests.get(
+                f"https://rubygems.org/api/v1/gems/{pkg}/owners.json", timeout=6
+            )
+            if ro.status_code == 200:
+                owners = ro.json()
+                names  = [o.get("handle") or o.get("login", "") for o in owners[:3]]
+                names  = [n for n in names if n]
+                if len(names) > 1:
+                    maint = f"User · {names[0]} +{len(names)-1}"
+                elif names:
+                    maint = f"User · {names[0]}"
+        except Exception:
+            pass
+        lic = (d.get("licenses") or ["—"])[0] or "—"
         return {
-            "version":      d.get("version", "N/A"),
-            "maintainer":   "—",
-            "cves":         "—",
-            "license":      (d.get("licenses") or ["—"])[0],
-            "last_updated": (d.get("version_created_at", "") or "")[:10],
+            "version":      version,
+            "maintainer":   maint,
+            "cves":         _fetch_cves("RubyGems", pkg, version),
+            "license":      lic,
+            "last_updated": (d.get("version_created_at", "") or "")[:10] or "—",
             "downloads":    f"{d.get('downloads', 0):,}",
             "source":       f"https://rubygems.org/gems/{pkg}",
         }
@@ -210,15 +276,20 @@ def fetch_nuget(pkg):
             timeout=TIMEOUT
         )
         if r.status_code != 200: return None
-        items  = r.json().get("items", [])
+        items   = r.json().get("items", [])
         if not items: return None
-        latest = items[-1].get("items", [{}])[-1].get("catalogEntry", {})
+        latest  = items[-1].get("items", [{}])[-1].get("catalogEntry", {})
+        version = latest.get("version", "N/A")
+        authors = latest.get("authors", "") or "—"
+        if isinstance(authors, list):
+            authors = ", ".join(str(a) for a in authors[:3])
+        authors = authors.strip() or "—"
         return {
-            "version":      latest.get("version", "N/A"),
-            "maintainer":   "—",
-            "cves":         "—",
+            "version":      version,
+            "maintainer":   f"Org · {authors}" if authors != "—" else "—",
+            "cves":         _fetch_cves("NuGet", pkg, version),
             "license":      latest.get("licenseExpression", "—") or "—",
-            "last_updated": (latest.get("published", "") or "")[:10],
+            "last_updated": (latest.get("published", "") or "")[:10] or "—",
             "downloads":    "—",
             "source":       f"https://www.nuget.org/packages/{pkg}",
         }
@@ -228,19 +299,38 @@ def fetch_nuget(pkg):
 
 def fetch_crates(pkg):
     try:
-        r = requests.get(
-            f"https://crates.io/api/v1/crates/{pkg}", timeout=TIMEOUT,
-            headers={"User-Agent": "registry-intel-bulk-enroll/1.0"}
-        )
+        ua  = {"User-Agent": "registry-intel-bulk-enroll/1.0"}
+        r   = requests.get(f"https://crates.io/api/v1/crates/{pkg}", timeout=TIMEOUT, headers=ua)
         if r.status_code != 200: return None
-        d = r.json().get("crate", {})
+        data    = r.json()
+        crate   = data.get("crate", {})
+        version = crate.get("newest_version", "N/A")
+        lic     = "—"
+        versions = data.get("versions", [])
+        if versions:
+            lic = versions[0].get("license", "—") or "—"
+        maint = "—"
+        try:
+            ro = requests.get(
+                f"https://crates.io/api/v1/crates/{pkg}/owner_user",
+                timeout=6, headers=ua
+            )
+            if ro.status_code == 200:
+                owners = ro.json().get("users", [])
+                names  = [o.get("login", "") for o in owners[:3] if o.get("login")]
+                if len(names) > 1:
+                    maint = f"User · {names[0]} +{len(names)-1}"
+                elif names:
+                    maint = f"User · {names[0]}"
+        except Exception:
+            pass
         return {
-            "version":      d.get("newest_version", "N/A"),
-            "maintainer":   "—",
-            "cves":         "—",
-            "license":      "—",
-            "last_updated": (d.get("updated_at", "") or "")[:10],
-            "downloads":    f"{d.get('downloads', 0):,}",
+            "version":      version,
+            "maintainer":   maint,
+            "cves":         _fetch_cves("crates.io", pkg, version),
+            "license":      lic,
+            "last_updated": (crate.get("updated_at", "") or "")[:10] or "—",
+            "downloads":    f"{crate.get('downloads', 0):,}",
             "source":       f"https://crates.io/crates/{pkg}",
         }
     except Exception:
@@ -259,13 +349,19 @@ def fetch_maven(pkg):
         if r.status_code != 200: return None
         docs = r.json().get("response", {}).get("docs", [])
         if not docs: return None
-        doc = docs[0]
+        doc     = docs[0]
+        version = doc.get("latestVersion", "N/A")
+        last_updated = "—"
+        ts = doc.get("timestamp")
+        if ts:
+            import datetime as _dt
+            last_updated = _dt.datetime.utcfromtimestamp(ts / 1000).strftime("%Y-%m-%d")
         return {
-            "version":      doc.get("latestVersion", "N/A"),
+            "version":      version,
             "maintainer":   f"Org · {g}",
-            "cves":         "—",
+            "cves":         _fetch_cves("Maven", f"{g}:{a}", version),
             "license":      "—",
-            "last_updated": "—",
+            "last_updated": last_updated,
             "downloads":    "—",
             "source":       f"https://search.maven.org/artifact/{g}/{a}",
         }
