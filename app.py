@@ -753,7 +753,10 @@ def _diff_and_alert(library: str, registry: str, old_snap: dict, new_snap: dict)
                 cur.execute(
                     """INSERT INTO package_alerts
                        (library, registry, detected_at, severity, field, old_value, new_value)
-                       VALUES (%s, %s, NOW(), %s, %s, %s, %s)""",
+                       VALUES (%s, %s, NOW(), %s, %s, %s, %s)
+                       ON CONFLICT (library, registry, field,
+                                    COALESCE(new_value,''), _pa_utc_date(detected_at))
+                       DO NOTHING""",
                     (library, registry, sev, fld, old_v, new_v),
                 )
                 _notify_telegram(library, registry, sev, fld, old_v, new_v)
@@ -883,6 +886,63 @@ def _monitored_get_all() -> list:
         return rows
     except Exception:
         return []
+
+
+def _auto_enroll_to_yaml(scan_rows: list):
+    """Auto-save newly scanned packages to packages.yaml + DB.
+
+    Called after every scan — silently adds new packages to the watchlist.
+    Skips packages already listed. Appends to END of file (preserves comments).
+    No-op if packages.yaml is missing or pyyaml not installed.
+    """
+    try:
+        import yaml as _yaml
+    except ImportError:
+        return
+
+    _yaml_path = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "packages.yaml"
+    )
+    try:
+        with open(_yaml_path, "r", encoding="utf-8") as _f:
+            _config = _yaml.safe_load(_f) or {}
+    except Exception:
+        return
+
+    _existing = _config.get("packages") or []
+    _existing_keys = set()
+    for _e in _existing:
+        _n = str(_e.get("name", "")).strip().lower()
+        _r = str(_e.get("registry", "")).strip().lower()
+        _gh = re.search(r"github\.com/(.+)", _n)
+        if _gh:
+            _n = _gh.group(1).rstrip("/")
+        _existing_keys.add((_n, _r))
+
+    _new_entries = []
+    for _row in scan_rows:
+        _lib = str(_row.get("Library", "")).strip()
+        _reg = str(_row.get("Registry", "")).strip()
+        if not _lib or not _reg:
+            continue
+        _lib_key = _lib.lower()
+        _gh = re.search(r"github\.com/(.+)", _lib_key)
+        if _gh:
+            _lib_key = _gh.group(1).rstrip("/")
+        if (_lib_key, _reg.lower()) in _existing_keys:
+            continue
+        _new_entries.append((_lib, _reg))
+        _existing_keys.add((_lib_key, _reg.lower()))
+        _monitor_upsert(_lib, _reg)
+
+    if not _new_entries:
+        return
+    try:
+        with open(_yaml_path, "a", encoding="utf-8") as _f:
+            for _lib, _reg in _new_entries:
+                _f.write(f"\n  - name: {_lib}\n    registry: {_reg}\n")
+    except Exception:
+        pass
 
 # ── Utilities ──────────────────────────────────────────────────────────────────
 def _exact_match(q, name):
