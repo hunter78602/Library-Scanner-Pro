@@ -831,9 +831,6 @@ def _alerts_get_all(limit: int = 200) -> list:
                               AND new_value IN ('User', 'Org', 'User ·', 'Org ·'))
                      AND NOT (field = 'cves'
                               AND new_value !~ '(CVE-[0-9]{4}-[0-9]+|GHSA-)')
-                     AND NOT (field = 'license'
-                              AND REGEXP_REPLACE(LOWER(old_value), '[^a-z0-9]', '', 'g') = ANY(
-                                  SELECT REGEXP_REPLACE(LOWER(new_value), '[^a-z0-9]', '', 'g')))
                    ORDER BY detected_at DESC
                    LIMIT %s""",
                 (limit,),
