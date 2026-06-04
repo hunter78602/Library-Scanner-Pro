@@ -34,7 +34,9 @@ jobs:
         env:
           DATABASE_URL:       ${{ secrets.DATABASE_URL }}
           GITHUB_TOKEN:       ${{ secrets.GH_TOKEN }}
-          SLACK_WEBHOOK_URL:  ${{ secrets.SLACK_WEBHOOK_URL }}
+          SLACK_WEBHOOK_URL:   ${{ secrets.SLACK_WEBHOOK_URL }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID:   ${{ secrets.TELEGRAM_CHAT_ID }}
           ALERT_EMAIL_TO:     ${{ secrets.ALERT_EMAIL_TO }}
           ALERT_EMAIL_FROM:   ${{ secrets.ALERT_EMAIL_FROM }}
           SMTP_HOST:          ${{ secrets.SMTP_HOST }}

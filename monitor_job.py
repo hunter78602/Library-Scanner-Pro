@@ -49,10 +49,12 @@ DATABASE_URL = os.environ.get(
 )
 
 # ── Notification config (all optional) ────────────────────────────────────────
-SLACK_WEBHOOK_URL = os.environ.get("SLACK_WEBHOOK_URL", "")
-ALERT_EMAIL_TO    = os.environ.get("ALERT_EMAIL_TO",    "")
-ALERT_EMAIL_FROM  = os.environ.get("ALERT_EMAIL_FROM",  "")
-SMTP_HOST         = os.environ.get("SMTP_HOST",         "smtp.gmail.com")
+SLACK_WEBHOOK_URL   = os.environ.get("SLACK_WEBHOOK_URL",   "")
+ALERT_EMAIL_TO      = os.environ.get("ALERT_EMAIL_TO",      "")
+ALERT_EMAIL_FROM    = os.environ.get("ALERT_EMAIL_FROM",     "")
+SMTP_HOST           = os.environ.get("SMTP_HOST",            "smtp.gmail.com")
+TELEGRAM_BOT_TOKEN  = os.environ.get("TELEGRAM_BOT_TOKEN",  "")
+TELEGRAM_CHAT_ID    = os.environ.get("TELEGRAM_CHAT_ID",     "")
 SMTP_PORT         = int(os.environ.get("SMTP_PORT") or "587")
 SMTP_USER         = os.environ.get("SMTP_USER",         "")
 SMTP_PASS         = os.environ.get("SMTP_PASS",         "")
@@ -177,7 +179,10 @@ def write_alerts(library, registry, old_snap, new_snap):
                 cur.execute(
                     """INSERT INTO package_alerts
                        (library, registry, detected_at, severity, field, old_value, new_value)
-                       VALUES (%s, %s, NOW(), %s, %s, %s, %s)""",
+                       VALUES (%s, %s, NOW(), %s, %s, %s, %s)
+                       ON CONFLICT (library, registry, field,
+                                    COALESCE(new_value,''), _pa_utc_date(detected_at))
+                       DO NOTHING""",
                     (library, registry, sev, fld, old_v, new_v)
                 )
                 log(f"  ALERT [{sev.upper()}] {fld}: '{old_v}' → '{new_v}'")
@@ -514,6 +519,31 @@ def notify_slack(all_alerts):
         log(f"Slack notification error: {e}")
 
 
+def notify_telegram(all_alerts):
+    """Send a Telegram message via Bot API. Only runs if TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID are set."""
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID or not all_alerts:
+        return
+    try:
+        date  = datetime.datetime.utcnow().strftime("%Y-%m-%d")
+        count = len(all_alerts)
+        header = f"🚨 *Package Monitor Alert — {date}*\n_{count} change(s) detected_"
+        lines  = _format_alert_lines(all_alerts)
+        body   = "\n\n".join(lines)
+        text   = f"{header}\n\n{body}"
+        url    = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+        r = requests.post(url, json={
+            "chat_id":    TELEGRAM_CHAT_ID,
+            "text":       text,
+            "parse_mode": "Markdown",
+        }, timeout=10)
+        if r.status_code == 200:
+            log("Telegram notification sent ✓")
+        else:
+            log(f"Telegram notification failed: {r.status_code} {r.text}")
+    except Exception as e:
+        log(f"Telegram notification error: {e}")
+
+
 def notify_email(all_alerts):
     """Send an email digest. Only runs if ALERT_EMAIL_TO and SMTP_* vars are set."""
     if not ALERT_EMAIL_TO or not SMTP_HOST or not SMTP_USER or not SMTP_PASS:
@@ -650,6 +680,7 @@ def main():
         log(f"\nSending notifications for {len(all_new_alerts)} alert(s)...")
         notify_slack(all_new_alerts)
         notify_email(all_new_alerts)
+        notify_telegram(all_new_alerts)
     else:
         log("No notifications to send.")
 
