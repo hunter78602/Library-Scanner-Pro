@@ -211,11 +211,12 @@ _TELEGRAM_TOKEN, _TELEGRAM_CHAT_ID = _load_telegram_config()
 
 _SEV_EMOJI_TG = {"critical": "🚨", "high": "⚠️", "medium": "🔔", "info": "ℹ️"}
 _FIELD_LABEL_TG = {
-    "maintainer":   "Maintainer changed",
-    "cves":         "CVEs detected",
-    "version":      "Version changed",
-    "license":      "License changed",
-    "last_updated": "Last-updated date changed",
+    "maintainer_email_domain": "Email domain changed (P1 — hijack signal)",
+    "maintainer":              "Maintainer changed",
+    "cves":                    "CVEs detected",
+    "version":                 "Version changed",
+    "license":                 "License changed",
+    "last_updated":            "Last-updated date changed",
 }
 
 def _notify_telegram(library: str, registry: str, severity: str,
@@ -576,10 +577,11 @@ _migrate_cache()
 # ══════════════════════════════════════════════════════════════════════════════
 
 _MONITOR_FIELD_SEVERITY = {
-    "cves":         "critical",
-    "maintainer":   "high",
-    "last_updated": "high",
-    "license":      "medium",
+    "cves":                    "critical",
+    "maintainer_email_domain": "critical",   # P1: domain change = account hijack signal
+    "maintainer":              "high",
+    "last_updated":            "high",
+    "license":                 "medium",
     # version removed — routine bumps generate noise, not security signal
 }
 
@@ -768,13 +770,14 @@ def _pipeline_ingest(audit_rows: list):
             continue
         row_data = ar.get("_row_data") or ar
         snapshot = {
-            "version":      row_data.get("Version",      "N/A"),
-            "maintainer":   row_data.get("Maintainer",   "—"),
-            "cves":         row_data.get("CVEs",         "—"),
-            "license":      row_data.get("License",      "—"),
-            "last_updated": row_data.get("Last Updated", "—"),
-            "downloads":    row_data.get("Downloads",    "—"),
-            "source":       row_data.get("Repo",         ""),
+            "version":                 row_data.get("Version",                    "N/A"),
+            "maintainer":              row_data.get("Maintainer",                 "—"),
+            "cves":                    row_data.get("CVEs",                       "—"),
+            "license":                 row_data.get("License",                    "—"),
+            "last_updated":            row_data.get("Last Updated",               "—"),
+            "downloads":               row_data.get("Downloads",                  "—"),
+            "maintainer_email_domain": row_data.get("_maintainer_email_domain",   "") or "",
+            "source":                  row_data.get("Repo",                       ""),
         }
         _monitor_upsert(library, registry)
         old_snap = _snapshot_get_latest(library, registry)
@@ -3691,14 +3694,21 @@ def _gh_owner_from_url(url) -> str:
     m = re.search(r"github\.com[/:]([\w\-\.]+)/", url, flags=re.IGNORECASE)
     return m.group(1) if m else ""
 
+def _email_domain(email: str) -> str:
+    """Extract domain from an email address. Returns '' if not found."""
+    if not email or "@" not in email:
+        return ""
+    return email.split("@")[-1].lower().strip()
+
+
 def _row(lib, reg, ver="N/A", desc="—", lic="—", dl=0,
          maintainer="—", cves="—", repo="N/A", last_updated="—",
-         gh_owner=""):
+         gh_owner="", maintainer_email_domain=""):
     """
-    `gh_owner` is the GitHub org/user from the upstream source repo (e.g.
-    "facebook" for React on npm). Used internally for country lookup so we
-    look up the REAL maintainer's location, not a registry-specific bot account.
-    Dropped from the displayed dataframe — never shown to the user.
+    `gh_owner` is the GitHub org/user from the upstream source repo.
+    `maintainer_email_domain` is the primary maintainer's email domain — used
+    by P1 monitoring to detect domain changes that may signal account hijack.
+    Both fields are hidden from the UI.
     """
     return {
         "Library":      lib,
@@ -3710,12 +3720,10 @@ def _row(lib, reg, ver="N/A", desc="—", lic="—", dl=0,
         "Downloads":    _fmt_dl(dl),
         "Last Updated": _fmt_date(last_updated),
         "Description":  _trunc(desc),
-        # _clean_repo_url normalises every adapter's URL: strips git+ prefix,
-        # converts git:// → https://, removes .git suffix, ensures https://
-        # This guarantees every Source button gets a clickable, working link.
         "Repo":         _clean_repo_url(repo),
         "_dl_raw":      int(dl) if dl else 0,
-        "_gh_owner":    gh_owner or "",          # hidden: used by country lookup
+        "_gh_owner":    gh_owner or "",                    # hidden: country lookup
+        "_maintainer_email_domain": maintainer_email_domain or "",  # hidden: P1 monitoring
     }
 
 # ── GitHub profile helpers ────────────────────────────────────────────────────
@@ -4505,6 +4513,10 @@ class PyPIAdapter(BaseAdapter):
         name = d.get("maintainer") or d.get("author") or "—"
         m    = _m_auto(name)
         c    = check_vuln(pkg, "PyPI")
+        # P1: extract author/maintainer email domain for hijack monitoring
+        _raw_email = d.get("author_email", "") or d.get("maintainer_email", "") or ""
+        _m_email   = re.search(r'[\w.+-]+@[\w.-]+\.\w+', _raw_email)
+        _pypi_email_dom = _email_domain(_m_email.group(0) if _m_email else "")
         # Extract the REAL GitHub org from project_urls for country lookup
         _gh = ""
         for v_ in (d.get("project_urls") or {}).values():
@@ -4517,7 +4529,8 @@ class PyPIAdapter(BaseAdapter):
                     dl, m, c,
                     self._pypi_source_url(d, pkg),
                     last_updated=last_updated,
-                    gh_owner=_gh)
+                    gh_owner=_gh,
+                    maintainer_email_domain=_pypi_email_dom)
 
     def search(self, q, **kw):
         slug = q.strip().replace(" ","-").lower()
@@ -4614,6 +4627,10 @@ class NPMAdapter(BaseAdapter):
 
         m = self._npm_maintainer(pkg, d)
         c = check_vuln(pkg,"npm")
+        # P1: extract primary maintainer email domain for hijack monitoring
+        _mlist = d.get("maintainers") or []
+        _primary_email = (_mlist[0].get("email", "") if _mlist and isinstance(_mlist[0], dict) else "")
+        _npm_email_dom = _email_domain(_primary_email)
         # Source button → always the npm page for this package.
         # Country lookup → use the REAL GitHub org from the repo URL,
         # not the npm publish-account name (e.g. "fb" → "facebook").
@@ -4621,7 +4638,8 @@ class NPMAdapter(BaseAdapter):
                     dl, m, c,
                     f"https://www.npmjs.com/package/{pkg}",
                     last_updated=last_updated,
-                    gh_owner=_gh_owner_from_url(repo))
+                    gh_owner=_gh_owner_from_url(repo),
+                    maintainer_email_domain=_npm_email_dom)
 
     def search(self, q, **kw):
         r = requests.get(
@@ -9407,11 +9425,12 @@ with _mon_alerts_tab:
             "medium": "#eab308",   "info": "#3b82f6",
         }
         _FIELD_LABEL = {
-            "version":      "Version changed",
-            "maintainer":   "Maintainer changed",
-            "cves":         "CVEs changed",
-            "license":      "License changed",
-            "last_updated": "Last-updated date changed",
+            "maintainer_email_domain": "Email domain changed (P1 — hijack signal)",
+            "version":                 "Version changed",
+            "maintainer":              "Maintainer changed",
+            "cves":                    "CVEs changed",
+            "license":                 "License changed",
+            "last_updated":            "Last-updated date changed",
         }
         for _alert in _all_alerts:
             _sev        = _alert.get("severity", "info")
