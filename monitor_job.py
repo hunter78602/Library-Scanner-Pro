@@ -209,6 +209,18 @@ def write_alerts(library, registry, old_snap, new_snap):
         elif field == "maintainer":
             if _norm_maintainer(old_val) == _norm_maintainer(new_val):
                 continue
+        elif field == "last_updated":
+            # Only alert when the date shift is significant (>30 days).
+            # Active packages update every few days — that's normal, not a signal.
+            # Meaningful cases: dormant package suddenly active, or big gap in activity.
+            try:
+                import datetime as _dt
+                old_dt = _dt.datetime.strptime(old_val[:10], "%Y-%m-%d")
+                new_dt = _dt.datetime.strptime(new_val[:10], "%Y-%m-%d")
+                if abs((new_dt - old_dt).days) < 30:
+                    continue
+            except Exception:
+                pass
 
         if old_val != new_val:
             alerts.append((severity, field, old_val, new_val))
