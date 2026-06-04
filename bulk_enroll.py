@@ -38,7 +38,7 @@ except ImportError:
 DATABASE_URL   = os.environ.get(
     "DATABASE_URL",
     "postgresql://postgres:postgres@localhost:5432/registry_intel"
-)
+).strip()
 PACKAGES_FILE  = os.path.join(os.path.dirname(os.path.abspath(__file__)), "packages.yaml")
 GITHUB_TOKEN   = os.environ.get("GITHUB_TOKEN", "")
 TIMEOUT        = 10
