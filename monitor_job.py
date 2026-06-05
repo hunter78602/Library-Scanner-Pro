@@ -736,71 +736,49 @@ def fetch_crates(pkg):
 
 def fetch_maven(pkg):
     try:
-        def _query(q, artifact_id):
+        def _fetch_metadata(g, a):
+            """Fetch version + last_updated from maven-metadata.xml directly."""
+            g_path = g.replace(".", "/")
             r = requests.get(
-                f"https://search.maven.org/solrsearch/select?q={q}&rows=5&wt=json",
-                timeout=TIMEOUT
+                f"https://repo1.maven.org/maven2/{g_path}/{a}/maven-metadata.xml",
+                timeout=12
             )
             if r.status_code != 200:
-                return None
-            docs = r.json().get("response", {}).get("docs", [])
-            exact = [d for d in docs if d.get("a", "").lower() == artifact_id.lower()]
-            return exact[0] if exact else (docs[0] if docs else None)
+                return None, "—"
+            txt = r.text
+            version = "N/A"
+            m_rel = re.search(r"<release>([^<]+)</release>", txt)
+            m_lat = re.search(r"<latest>([^<]+)</latest>", txt)
+            if m_rel:
+                version = m_rel.group(1).strip()
+            elif m_lat:
+                version = m_lat.group(1).strip()
+            last_updated = "—"
+            m_upd = re.search(r"<lastUpdated>(\d{8})\d*</lastUpdated>", txt)
+            if m_upd:
+                raw = m_upd.group(1)
+                last_updated = f"{raw[0:4]}-{raw[4:6]}-{raw[6:8]}"
+            return version, last_updated
 
         if ":" in pkg:
+            # Explicit groupId:artifactId — go direct
             g, a = pkg.split(":", 1)
-            doc = _query(f"g:{g}+AND+a:{a}", a)
+            version, last_updated = _fetch_metadata(g, a)
+            if version == "N/A" and last_updated == "—":
+                return None
         else:
-            doc = _query(f"g:{pkg}+AND+a:{pkg}", pkg) or _query(f"a:{pkg}", pkg)
-            # text search fallback
-            if not doc:
-                pkg_norm = re.sub(r'[\.\-_]', '', pkg.lower())
-                r = requests.get(
-                    f"https://search.maven.org/solrsearch/select"
-                    f"?q={requests.utils.quote(pkg)}&rows=10&wt=json",
-                    timeout=TIMEOUT
-                )
-                if r.status_code == 200:
-                    docs = r.json().get("response", {}).get("docs", [])
-                    relevant = [d for d in docs
-                                if re.sub(r'[\.\-_]', '', d.get("a","").lower()).startswith(pkg_norm)]
-                    if not relevant:
-                        relevant = [d for d in docs
-                                    if pkg_norm in re.sub(r'[\.\-_]', '', d.get("a","").lower())]
-                    if relevant:
-                        doc = max(relevant, key=lambda d: d.get("versionCount", 0))
+            # Plain name — try WebJars groups and mvnpm (no Solr needed)
+            a = pkg
+            g = None
+            for group in ["org.webjars.npm", "org.webjars.bower",
+                          "org.webjars", "org.mvnpm"]:
+                ver, lu = _fetch_metadata(group, pkg)
+                if ver != "N/A" or lu != "—":
+                    g, version, last_updated = group, ver, lu
+                    break
+            if not g:
+                return None
 
-        if not doc:
-            return None
-
-        g = doc.get("g", "")
-        a = doc.get("a", "")
-        version = doc.get("latestVersion", "N/A")
-        last_updated = "—"
-        ts = doc.get("timestamp")
-        if ts:
-            last_updated = datetime.datetime.utcfromtimestamp(ts / 1000).strftime("%Y-%m-%d")
-        # Try maven-metadata.xml for accurate version
-        try:
-            g_path = g.replace(".", "/")
-            meta_r = requests.get(
-                f"https://repo1.maven.org/maven2/{g_path}/{a}/maven-metadata.xml",
-                timeout=6
-            )
-            if meta_r.status_code == 200:
-                txt = meta_r.text
-                m_rel = re.search(r"<release>([^<]+)</release>", txt)
-                m_lat = re.search(r"<latest>([^<]+)</latest>", txt)
-                if m_rel:
-                    version = m_rel.group(1).strip()
-                elif m_lat:
-                    version = m_lat.group(1).strip()
-                m_upd = re.search(r"<lastUpdated>(\d{8})\d*</lastUpdated>", txt)
-                if m_upd:
-                    raw = m_upd.group(1)
-                    last_updated = f"{raw[0:4]}-{raw[4:6]}-{raw[6:8]}"
-        except Exception:
-            pass
         return {
             "version":      version,
             "maintainer":   f"Org · {g}",
