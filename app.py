@@ -735,8 +735,8 @@ def _diff_and_alert(library: str, registry: str, old_snap: dict, new_snap: dict)
     )
     alerts = []
     for field, severity in _fields.items():
-        old_val = str(old_snap.get(field, "") or "")
-        new_val = str(new_snap.get(field, "") or "")
+        old_val = re.sub(r'\s+', ' ', str(old_snap.get(field, "") or "").strip())
+        new_val = re.sub(r'\s+', ' ', str(new_snap.get(field, "") or "").strip())
         if old_val == new_val:
             continue
         if new_val in _EMPTY_VALS:

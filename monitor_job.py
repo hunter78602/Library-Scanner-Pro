@@ -198,8 +198,8 @@ def write_alerts(library, registry, old_snap, new_snap):
     """
     alerts = []
     for field, severity in MONITOR_FIELD_SEVERITY.items():
-        old_val = str(old_snap.get(field, "") or "")
-        new_val = str(new_snap.get(field, "") or "")
+        old_val = re.sub(r'\s+', ' ', str(old_snap.get(field, "") or "").strip())
+        new_val = re.sub(r'\s+', ' ', str(new_snap.get(field, "") or "").strip())
 
         # Skip if new value is unknown/blank — not a meaningful change
         if _is_unknown(new_val):
