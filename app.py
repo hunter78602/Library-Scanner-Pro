@@ -6637,6 +6637,18 @@ class ECRPublicAdapter(BaseAdapter):
 class GitHubRepoAdapter(BaseAdapter):
     """Show the top-matching GitHub repository for a package name."""
 
+    def _latest_release_tag(self, full_name: str, headers: dict) -> str:
+        """Return the latest release tag, or '' if none exist."""
+        try:
+            r = requests.get(
+                f"https://api.github.com/repos/{full_name}/releases/latest",
+                headers=headers, timeout=TIMEOUT)
+            if r.status_code == 200:
+                return r.json().get("tag_name", "")
+        except Exception:
+            pass
+        return ""
+
     def fetch(self, pkg: str, **kw) -> "dict | None":
         token = kw.get("token", "")
         headers = {"Accept": "application/vnd.github+json",
@@ -6649,7 +6661,9 @@ class GitHubRepoAdapter(BaseAdapter):
             r = requests.get(f"https://api.github.com/repos/{pkg}",
                              headers=headers, timeout=TIMEOUT)
             if r.status_code == 200:
-                return self._row_from(r.json())
+                repo = r.json()
+                tag  = self._latest_release_tag(pkg, headers)
+                return self._row_from(repo, tag)
             return None
 
         # Search for repos — prefer exact name match, else highest-starred
@@ -6667,7 +6681,8 @@ class GitHubRepoAdapter(BaseAdapter):
                         return None
                     exact = next((i for i in items if i["name"].lower() == pkg.lower()), None)
                     repo  = exact or items[0]
-                    return self._row_from(repo)
+                    tag   = self._latest_release_tag(repo.get("full_name", ""), headers)
+                    return self._row_from(repo, tag)
                 if r.status_code in (403, 429) and _attempt == 0:
                     import time as _time; _time.sleep(2)
                     continue
@@ -6676,7 +6691,7 @@ class GitHubRepoAdapter(BaseAdapter):
                 return None
         return None
 
-    def _row_from(self, repo: dict) -> dict:
+    def _row_from(self, repo: dict, release_tag: str = "") -> dict:
         owner     = repo.get("owner", {})
         owner_login = owner.get("login", "")
         owner_type  = owner.get("type", "User")
@@ -6686,10 +6701,11 @@ class GitHubRepoAdapter(BaseAdapter):
             license_val = "—"
         last_updated = (repo.get("updated_at") or "—")[:10]
         stars        = repo.get("stargazers_count", 0)
+        version      = release_tag or repo.get("default_branch", "N/A")
         return _row(
             repo.get("name", ""),
             "GitHub",
-            repo.get("default_branch", "N/A"),
+            version,
             repo.get("description") or "—",
             license_val,
             stars,
@@ -6713,7 +6729,8 @@ class GitHubRepoAdapter(BaseAdapter):
                 headers=headers, timeout=TIMEOUT)
             if r.status_code != 200:
                 return []
-            return [self._row_from(i) for i in r.json().get("items", [])]
+            return [self._row_from(i, self._latest_release_tag(i.get("full_name",""), headers))
+                    for i in r.json().get("items", [])]
         except Exception:
             return []
 
