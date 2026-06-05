@@ -9428,7 +9428,7 @@ if not st.session_state.get("_monitor_checked"):
 
 st.markdown("---")
 
-_dash_col1, _dash_col2, _dash_col3 = st.columns([4, 1.5, 1.5])
+_dash_col1, _dash_col2, _dash_col3, _dash_col4 = st.columns([4, 1.5, 1.5, 1.5])
 with _dash_col1:
     st.markdown("### 🔍 Monitoring Dashboard")
     st.caption(
@@ -9440,6 +9440,71 @@ with _dash_col2:
         st.rerun()
 with _dash_col3:
     _auto_refresh = st.toggle("⏱ Auto-refresh", key="_auto_refresh", value=False)
+with _dash_col4:
+    import io as _io, csv as _csv
+    _rpt_pkgs    = _monitored_get_all()
+    _rpt_alerts  = _alerts_get_all(limit=500)
+    _rpt_now     = datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
+    _rpt_24h_cutoff = datetime.datetime.utcnow() - datetime.timedelta(hours=24)
+    _rpt_checked_24h = sum(
+        1 for p in _rpt_pkgs
+        if p.get("last_checked") and p["last_checked"] > _rpt_24h_cutoff
+    )
+    _rpt_buf = _io.StringIO()
+    _rpt_w   = _csv.writer(_rpt_buf)
+    # ── Section 1: Summary ──
+    _rpt_w.writerow(["SCAN COVERAGE REPORT"])
+    _rpt_w.writerow(["Generated", _rpt_now])
+    _rpt_w.writerow(["Total packages monitored", len(_rpt_pkgs)])
+    _rpt_w.writerow(["Packages checked in last 24h", _rpt_checked_24h])
+    _rpt_w.writerow(["Coverage %", f"{round(_rpt_checked_24h / max(len(_rpt_pkgs),1) * 100)}%"])
+    _rpt_w.writerow(["Total alerts", len(_rpt_alerts)])
+    _rpt_w.writerow(["Critical alerts", sum(1 for a in _rpt_alerts if a.get("severity") == "critical")])
+    _rpt_w.writerow(["High alerts",     sum(1 for a in _rpt_alerts if a.get("severity") == "high")])
+    _rpt_w.writerow(["Medium alerts",   sum(1 for a in _rpt_alerts if a.get("severity") == "medium")])
+    _rpt_w.writerow(["Check frequency", "Every 6 hours (automated via GitHub Actions)"])
+    _rpt_w.writerow([])
+    # ── Section 2: Packages ──
+    _rpt_w.writerow(["MONITORED PACKAGES"])
+    _rpt_w.writerow(["Library","Registry","Enrolled","Last Checked","Next Check","Version","Maintainer","CVEs","License"])
+    for _p in _rpt_pkgs:
+        _s = _p.get("snapshot") or {}
+        _rpt_w.writerow([
+            _p.get("library",""), _p.get("registry",""),
+            str(_p.get("enrolled_at",""))[:10],
+            str(_p.get("last_checked","") or "—")[:16],
+            str(_p.get("next_check_at","") or "—")[:16],
+            _s.get("version","—"), _s.get("maintainer","—"),
+            _s.get("cves","—"),    _s.get("license","—"),
+        ])
+    _rpt_w.writerow([])
+    # ── Section 3: Alerts ──
+    _rpt_w.writerow(["ALERTS"])
+    _rpt_w.writerow(["Library","Registry","Severity","Field","Before","After","Detected At"])
+    _FIELD_LABEL_RPT = {
+        "maintainer_email_domain": "Email domain changed (P1 - hijack signal)",
+        "maintainer":  "Maintainer changed",
+        "cves":        "CVEs changed",
+        "license":     "License changed",
+        "last_updated":"Last-updated date changed",
+    }
+    for _a in _rpt_alerts:
+        _rpt_w.writerow([
+            _a.get("library",""), _a.get("registry",""),
+            _a.get("severity","").upper(),
+            _FIELD_LABEL_RPT.get(_a.get("field",""), _a.get("field","")),
+            _a.get("old_value","") or "—",
+            _a.get("new_value","") or "—",
+            str(_a.get("detected_at",""))[:16],
+        ])
+    st.download_button(
+        label="📊 Export Report",
+        data=_rpt_buf.getvalue().encode("utf-8"),
+        file_name=f"library_scanner_report_{datetime.datetime.utcnow().strftime('%Y%m%d')}.csv",
+        mime="text/csv",
+        use_container_width=True,
+        key="_export_report",
+    )
 
 if _auto_refresh:
     import time as _time
