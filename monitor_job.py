@@ -308,7 +308,7 @@ def write_alerts(library, registry, old_snap, new_snap):
 
 def update_checked(library, registry):
     """Push next_check_at forward — 6h for GitHub (webhook handles real-time), 1h for others."""
-    interval = "6 hours" if registry == "GitHub" else "1 hour"
+    interval = "1 hour"
     try:
         with _pg_conn() as conn:
             cur = conn.cursor()
