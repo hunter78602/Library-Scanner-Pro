@@ -6545,7 +6545,7 @@ class GitHubRepoAdapter(BaseAdapter):
     """Show the top-matching GitHub repository for a package name."""
 
     def fetch(self, pkg: str, **kw) -> "dict | None":
-        token = kw.get("github_token", "")
+        token = kw.get("token", "")
         headers = {"Accept": "application/vnd.github+json",
                    "User-Agent": "RegistryIntelligencePlatform/1.0"}
         if token:
@@ -6602,7 +6602,7 @@ class GitHubRepoAdapter(BaseAdapter):
         )
 
     def search(self, q: str, **kw):
-        token = kw.get("github_token", "")
+        token = kw.get("token", "")
         headers = {"Accept": "application/vnd.github+json",
                    "User-Agent": "RegistryIntelligencePlatform/1.0"}
         if token:
