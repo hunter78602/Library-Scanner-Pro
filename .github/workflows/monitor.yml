@@ -4,6 +4,15 @@ on:
   schedule:
     - cron: '0 * * * *'  # every 1 hour
   workflow_dispatch:        # also allows manual run from GitHub Actions tab
+    inputs:
+      package:
+        description: 'Force-check this package immediately (owner/repo for GitHub repos)'
+        required: false
+        default: ''
+      registry:
+        description: 'Registry for the forced package (default: GitHub)'
+        required: false
+        default: 'GitHub'
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true   # opt into Node.js 24 now; silences deprecation warning
@@ -43,4 +52,6 @@ jobs:
           SMTP_PORT:          ${{ secrets.SMTP_PORT }}
           SMTP_USER:          ${{ secrets.SMTP_USER }}
           SMTP_PASS:          ${{ secrets.SMTP_PASS }}
+          FORCE_PACKAGE:      ${{ inputs.package }}
+          FORCE_REGISTRY:     ${{ inputs.registry || 'GitHub' }}
         run: python monitor_job.py

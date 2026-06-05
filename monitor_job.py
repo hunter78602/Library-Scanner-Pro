@@ -61,6 +61,11 @@ SMTP_PASS         = os.environ.get("SMTP_PASS",         "")
 
 TIMEOUT = 10  # seconds per request
 
+# When set, this package is force-checked even if next_check_at is in the future.
+# Used by webhook-triggered workflow_dispatch to immediately scan the changed repo.
+FORCE_PACKAGE  = os.environ.get("FORCE_PACKAGE",  "").strip()
+FORCE_REGISTRY = os.environ.get("FORCE_REGISTRY", "GitHub").strip()
+
 _pg_pool = None
 
 def _get_pg_pool():
@@ -306,8 +311,25 @@ def write_alerts(library, registry, old_snap, new_snap):
     return len(written), written
 
 
+def force_due(library, registry):
+    """Reset next_check_at to NOW() so the package is picked up as due immediately."""
+    try:
+        with _pg_conn() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                """UPDATE monitored_packages
+                   SET next_check_at = NOW()
+                   WHERE library = %s AND registry = %s""",
+                (library, registry)
+            )
+            cur.close()
+        log(f"  FORCE_PACKAGE: reset next_check_at for {library}/{registry}")
+    except Exception as e:
+        log(f"ERROR force_due ({library}/{registry}): {e}")
+
+
 def update_checked(library, registry):
-    """Push next_check_at forward — 6h for GitHub (webhook handles real-time), 1h for others."""
+    """Push next_check_at forward — 1h for all registries."""
     interval = "1 hour"
     try:
         with _pg_conn() as conn:
@@ -1085,6 +1107,11 @@ def main():
     log("=" * 60)
     log("Registry Monitor Job — starting")
     log("=" * 60)
+
+    # If a specific package was passed via env (webhook-triggered dispatch), force it due.
+    if FORCE_PACKAGE:
+        log(f"FORCE_PACKAGE={FORCE_PACKAGE} registry={FORCE_REGISTRY}")
+        force_due(FORCE_PACKAGE, FORCE_REGISTRY)
 
     due = get_due_packages()
     log(f"Packages due for re-check: {len(due)}")
