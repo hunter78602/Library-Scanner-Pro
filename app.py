@@ -181,10 +181,31 @@ TIMEOUT      = 9
 # Set DATABASE_URL in your .env file or as an environment variable.
 # Local:      postgresql://postgres:postgres@localhost:5432/registry_intel
 # Production: set DATABASE_URL to your cloud provider's connection string
-DATABASE_URL = os.environ.get(
-    "DATABASE_URL",
-    "postgresql://postgres:postgres@localhost:5432/registry_intel",
-)
+def _load_db_url() -> str:
+    # 1. Environment variable (GitHub Actions, .env, system env)
+    url = os.environ.get("DATABASE_URL", "")
+    if url and "PASTE_YOUR" not in url:
+        return url
+    # 2. Read .streamlit/secrets.toml directly (reliable at module load time)
+    try:
+        _s = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                          ".streamlit", "secrets.toml")
+        if os.path.exists(_s):
+            with open(_s, encoding="utf-8") as _f:
+                for _line in _f:
+                    _line = _line.strip()
+                    if _line.startswith("DATABASE_URL"):
+                        _parts = _line.split("=", 1)
+                        if len(_parts) == 2:
+                            _v = _parts[1].strip().strip('"').strip("'")
+                            if _v and "PASTE_YOUR" not in _v:
+                                return _v
+    except Exception:
+        pass
+    # 3. Fallback: localhost (dev only)
+    return "postgresql://postgres:postgres@localhost:5432/registry_intel"
+
+DATABASE_URL = _load_db_url()
 
 # ── Telegram config ────────────────────────────────────────────────────────────
 def _load_telegram_config() -> tuple:
@@ -1946,6 +1967,66 @@ def _enrich_countries(df, github_token: str = "") -> "pd.DataFrame":
                 except Exception:
                     name_to_country[_name] = "Unknown"
 
+    # ── Pass 3b: org top-contributor lookup ───────────────────────────────
+    # When an org has no public location ("❓ Org"), fetch its top contributor
+    # and use their country. e.g. axios org → jasonsaayman → South Africa.
+    org_to_contributor: dict[str, str] = {}
+    _orgs_no_loc = {n for n, c in name_to_country.items() if c == "❓ Org"}
+    if _orgs_no_loc:
+        _org_repo_map: dict[str, str] = {}
+        for _c in candidates:
+            # Only use gh_owner (explicit GitHub URL from adapter) — NOT pkg_org.
+            # pkg_org is inferred from package name and would produce wrong
+            # contributor lookups for cross-registry packages (NuGet "axios" ≠ npm axios).
+            _org = _c.get("gh_owner", "")
+            if _org and _org in _orgs_no_loc and _org not in _org_repo_map:
+                _rn = _c["lib"].split("/")[-1]
+                if _rn and len(_rn) >= 2:
+                    _org_repo_map[_org] = f"{_org}/{_rn}"
+
+        def _fetch_top_contributor(repo_path: str) -> str:
+            # Use most recent committer (not all-time top contributor) —
+            # reflects the current active maintainer, not the original author.
+            _h = {"Accept": "application/vnd.github+json",
+                  "User-Agent": "RegistryIntelligencePlatform/1.0"}
+            if github_token: _h["Authorization"] = f"Bearer {github_token}"
+            try:
+                _r = requests.get(
+                    f"https://api.github.com/repos/{repo_path}/commits?per_page=1",
+                    headers=_h, timeout=TIMEOUT)
+                if _r.status_code == 200:
+                    _items = _r.json()
+                    if isinstance(_items, list) and _items:
+                        _author = _items[0].get("author") or {}
+                        return _author.get("login", "")
+            except Exception:
+                pass
+            return ""
+
+        with ThreadPoolExecutor(max_workers=4) as _ex:
+            _cfuts = {_ex.submit(_fetch_top_contributor, rp): org
+                      for org, rp in _org_repo_map.items()}
+            for _fut in as_completed(_cfuts):
+                _org = _cfuts[_fut]
+                try:
+                    _contrib = _fut.result() or ""
+                    if _contrib:
+                        org_to_contributor[_org] = _contrib
+                except Exception:
+                    pass
+
+        _new_names = set(org_to_contributor.values()) - set(name_to_country.keys())
+        if _new_names:
+            with ThreadPoolExecutor(max_workers=4) as _ex:
+                _nfuts = {_ex.submit(_fetch_github_country, n, github_token): n
+                          for n in _new_names}
+                for _fut in as_completed(_nfuts):
+                    _n = _nfuts[_fut]
+                    try:
+                        name_to_country[_n] = _fut.result() or "Unknown"
+                    except Exception:
+                        name_to_country[_n] = "Unknown"
+
     # ── Pass 4: stitch per-row country + collect repo-search candidates ───
     # Resolution order per row:
     #   1. _gh_owner  (from adapter repo URL — authoritative signal)
@@ -1989,6 +2070,16 @@ def _enrich_countries(df, github_token: str = "") -> "pd.DataFrame":
         # Never runs when _gh_owner returned "Unknown" — individual chose not to share.
         if country in _MISSING and c["uname"]:
             country = name_to_country.get(c["uname"], "❓ No Profile")
+
+        # Signal 1c: org top-contributor fallback.
+        # Only fires when _gh_owner is explicitly set (adapter provided a real
+        # GitHub URL) AND the org has no public location. Using pkg_org here
+        # would produce false positives for cross-registry name collisions
+        # (e.g. NuGet "axios" ≠ npm axios, but shares the same pkg_org="axios").
+        if country in _MISSING and c["gh_owner"] and c["gh_owner"] in org_to_contributor:
+            _cc = name_to_country.get(org_to_contributor[c["gh_owner"]], "❓ No Profile")
+            if _cc not in _MISSING:
+                country = _cc
 
         # Repo-search fallback: only when no GitHub profile was found at all.
         if country == "❓ No Profile" and c["lib"] and len(c["lib"]) >= 3:
@@ -6596,7 +6687,7 @@ class GitHubRepoAdapter(BaseAdapter):
         last_updated = (repo.get("updated_at") or "—")[:10]
         stars        = repo.get("stargazers_count", 0)
         return _row(
-            repo.get("full_name", repo.get("name", "")),
+            repo.get("name", ""),
             "GitHub",
             repo.get("default_branch", "N/A"),
             repo.get("description") or "—",
@@ -9485,7 +9576,7 @@ if not st.session_state.get("_monitor_checked"):
         _due = _get_due_packages()
         for _bg_lib, _bg_reg in _due[:10]:
             try:
-                _bg_results, _ = run_audit(_bg_lib)
+                _bg_results, _ = run_audit(_bg_lib, github_token=github_token or None)
                 for _bgrow in _bg_results:
                     if _bgrow.get("Registry", "") == _bg_reg:
                         _bg_snap = {
