@@ -197,6 +197,17 @@ def write_alerts(library, registry, old_snap, new_snap):
     Used by the notification functions at the end of main().
     """
     alerts = []
+
+    # GitHub-specific: alert on new release tag.
+    # Version excluded globally (NPM/PyPI routine bumps = noise), but GitHub
+    # releases are explicit publish events — always worth alerting on.
+    if registry == "GitHub":
+        _old_ver = re.sub(r'\s+', ' ', str(old_snap.get("version", "") or "").strip())
+        _new_ver = re.sub(r'\s+', ' ', str(new_snap.get("version", "") or "").strip())
+        if (not _is_unknown(_old_ver) and not _is_unknown(_new_ver)
+                and _norm_version(_old_ver) != _norm_version(_new_ver)):
+            alerts.append(("medium", "version", _old_ver, _new_ver))
+
     for field, severity in MONITOR_FIELD_SEVERITY.items():
         old_val = re.sub(r'\s+', ' ', str(old_snap.get(field, "") or "").strip())
         new_val = re.sub(r'\s+', ' ', str(new_snap.get(field, "") or "").strip())
