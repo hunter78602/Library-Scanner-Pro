@@ -448,6 +448,19 @@ def fetch_github_direct(owner, repo):
 
 
 # Registry → fetcher map
+try:
+    from monitor_job import (fetch_packagist, fetch_homebrew,
+                             fetch_wordpress_plugins, fetch_vscode, fetch_winget)
+    _extra = {
+        "Packagist":           fetch_packagist,
+        "Homebrew":            fetch_homebrew,
+        "WordPress Plugins":   fetch_wordpress_plugins,
+        "VS Code Marketplace": fetch_vscode,
+        "Winget":              fetch_winget,
+    }
+except Exception:
+    _extra = {}
+
 FETCHERS = {
     "NPM":           fetch_npm,
     "PyPI":          fetch_pypi,
@@ -455,6 +468,7 @@ FETCHERS = {
     "NuGet":         fetch_nuget,
     "Crates.io":     fetch_crates,
     "Maven Central": fetch_maven,
+    **_extra,
 }
 
 
