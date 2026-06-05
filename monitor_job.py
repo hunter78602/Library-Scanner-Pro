@@ -288,7 +288,7 @@ def write_alerts(library, registry, old_snap, new_snap):
                        DO NOTHING""",
                     (library, registry, sev, fld, old_v, new_v)
                 )
-                log(f"  ALERT [{sev.upper()}] {fld}: '{old_v}' → '{new_v}'")
+                log(f"  ALERT [{sev.upper()}] {fld}: '{old_v}' -> '{new_v}'")
                 written.append((library, registry, sev, fld, old_v, new_v))
             cur.close()
     except Exception as e:
@@ -590,6 +590,108 @@ def fetch_github(pkg):
         return None
 
 
+def fetch_packagist(pkg):
+    try:
+        # Search for the package if no vendor prefix
+        if "/" not in pkg:
+            r = requests.get(
+                f"https://packagist.org/search.json?q={pkg}&per_page=1",
+                timeout=TIMEOUT
+            )
+            if r.status_code != 200:
+                return None
+            results = r.json().get("results", [])
+            if not results:
+                return None
+            pkg = results[0]["name"]
+        r = requests.get(f"https://packagist.org/packages/{pkg}.json", timeout=TIMEOUT)
+        if r.status_code != 200:
+            return None
+        data = r.json().get("package", {})
+        versions = data.get("versions", {})
+        latest = next(
+            (v for v in versions
+             if not v.startswith("dev-") and "RC" not in v
+             and "alpha" not in v and "beta" not in v),
+            next(iter(versions), None)
+        )
+        if not latest:
+            return None
+        ver_data = versions[latest]
+        authors = ver_data.get("authors", [])
+        author_names = [a.get("name", "") for a in authors[:2] if a.get("name")]
+        maint = f"User · {author_names[0]}" if author_names else "—"
+        lic = ver_data.get("license", ["—"])
+        if isinstance(lic, list):
+            lic = lic[0] if lic else "—"
+        dl = data.get("downloads", {}).get("total", 0)
+        return {
+            "version":      latest.lstrip("v"),
+            "maintainer":   maint,
+            "cves":         "—",
+            "license":      lic or "—",
+            "last_updated": (ver_data.get("time", "") or "")[:10] or "—",
+            "downloads":    f"{dl:,}" if dl else "—",
+        }
+    except Exception:
+        return None
+
+
+def fetch_homebrew(pkg):
+    try:
+        r = requests.get(
+            f"https://formulae.brew.sh/api/formula/{pkg.lower()}.json",
+            timeout=TIMEOUT
+        )
+        if r.status_code != 200:
+            return None
+        data = r.json()
+        version = data.get("versions", {}).get("stable", "N/A")
+        homepage = data.get("homepage", "")
+        maint = "—"
+        if "github.com/" in homepage:
+            owner = homepage.rstrip("/").split("github.com/")[-1].split("/")[0]
+            if owner:
+                maint = f"User · {owner}"
+        return {
+            "version":      version,
+            "maintainer":   maint,
+            "cves":         "—",
+            "license":      data.get("license", "—") or "—",
+            "last_updated": "—",
+            "downloads":    "—",
+        }
+    except Exception:
+        return None
+
+
+def fetch_wordpress_plugins(pkg):
+    try:
+        r = requests.get(
+            f"https://api.wordpress.org/plugins/info/1.0/{pkg.lower()}.json",
+            timeout=TIMEOUT
+        )
+        if r.status_code != 200:
+            return None
+        data = r.json()
+        if not data or isinstance(data, bool) or data.get("error"):
+            return None
+        version = data.get("version", "N/A")
+        author = re.sub(r'<[^>]+>', '', data.get("author", "") or "").strip()
+        maint = f"User · {author}" if author else "—"
+        dl = data.get("downloaded", 0)
+        return {
+            "version":      version,
+            "maintainer":   maint,
+            "cves":         "—",
+            "license":      data.get("license", "—") or "—",
+            "last_updated": (data.get("last_updated", "") or "")[:10] or "—",
+            "downloads":    f"{dl:,}" if dl else "—",
+        }
+    except Exception:
+        return None
+
+
 def fetch_crates(pkg):
     try:
         ua  = {"User-Agent": "registry-monitor-job/1.0"}
@@ -634,27 +736,71 @@ def fetch_crates(pkg):
 
 def fetch_maven(pkg):
     try:
-        parts = pkg.split(":")
-        if len(parts) != 2:
+        def _query(q, artifact_id):
+            r = requests.get(
+                f"https://search.maven.org/solrsearch/select?q={q}&rows=5&wt=json",
+                timeout=TIMEOUT
+            )
+            if r.status_code != 200:
+                return None
+            docs = r.json().get("response", {}).get("docs", [])
+            exact = [d for d in docs if d.get("a", "").lower() == artifact_id.lower()]
+            return exact[0] if exact else (docs[0] if docs else None)
+
+        if ":" in pkg:
+            g, a = pkg.split(":", 1)
+            doc = _query(f"g:{g}+AND+a:{a}", a)
+        else:
+            doc = _query(f"g:{pkg}+AND+a:{pkg}", pkg) or _query(f"a:{pkg}", pkg)
+            # text search fallback
+            if not doc:
+                pkg_norm = re.sub(r'[\.\-_]', '', pkg.lower())
+                r = requests.get(
+                    f"https://search.maven.org/solrsearch/select"
+                    f"?q={requests.utils.quote(pkg)}&rows=10&wt=json",
+                    timeout=TIMEOUT
+                )
+                if r.status_code == 200:
+                    docs = r.json().get("response", {}).get("docs", [])
+                    relevant = [d for d in docs
+                                if re.sub(r'[\.\-_]', '', d.get("a","").lower()).startswith(pkg_norm)]
+                    if not relevant:
+                        relevant = [d for d in docs
+                                    if pkg_norm in re.sub(r'[\.\-_]', '', d.get("a","").lower())]
+                    if relevant:
+                        doc = max(relevant, key=lambda d: d.get("versionCount", 0))
+
+        if not doc:
             return None
-        g, a = parts
-        r = requests.get(
-            f"https://search.maven.org/solrsearch/select?q=g:{g}+AND+a:{a}&rows=1&wt=json",
-            timeout=TIMEOUT
-        )
-        if r.status_code != 200:
-            return None
-        docs = r.json().get("response", {}).get("docs", [])
-        if not docs:
-            return None
-        doc     = docs[0]
+
+        g = doc.get("g", "")
+        a = doc.get("a", "")
         version = doc.get("latestVersion", "N/A")
-        # last_updated from timestamp (milliseconds)
         last_updated = "—"
         ts = doc.get("timestamp")
         if ts:
-            import datetime as _dt
-            last_updated = _dt.datetime.utcfromtimestamp(ts / 1000).strftime("%Y-%m-%d")
+            last_updated = datetime.datetime.utcfromtimestamp(ts / 1000).strftime("%Y-%m-%d")
+        # Try maven-metadata.xml for accurate version
+        try:
+            g_path = g.replace(".", "/")
+            meta_r = requests.get(
+                f"https://repo1.maven.org/maven2/{g_path}/{a}/maven-metadata.xml",
+                timeout=6
+            )
+            if meta_r.status_code == 200:
+                txt = meta_r.text
+                m_rel = re.search(r"<release>([^<]+)</release>", txt)
+                m_lat = re.search(r"<latest>([^<]+)</latest>", txt)
+                if m_rel:
+                    version = m_rel.group(1).strip()
+                elif m_lat:
+                    version = m_lat.group(1).strip()
+                m_upd = re.search(r"<lastUpdated>(\d{8})\d*</lastUpdated>", txt)
+                if m_upd:
+                    raw = m_upd.group(1)
+                    last_updated = f"{raw[0:4]}-{raw[4:6]}-{raw[6:8]}"
+        except Exception:
+            pass
         return {
             "version":      version,
             "maintainer":   f"Org · {g}",
@@ -667,15 +813,119 @@ def fetch_maven(pkg):
         return None
 
 
+def fetch_vscode(pkg):
+    try:
+        if "." not in pkg:
+            return None
+        payload = {
+            "filters": [{"criteria": [{"filterType": 7, "value": pkg}],
+                         "pageSize": 1, "pageNumber": 1}],
+            "flags": 514
+        }
+        r = requests.post(
+            "https://marketplace.visualstudio.com/_apis/public/gallery/"
+            "extensionquery?api-version=7.1-preview.1",
+            json=payload,
+            headers={"Accept": "application/json;api-version=7.1-preview.1",
+                     "Content-Type": "application/json"},
+            timeout=TIMEOUT
+        )
+        if r.status_code != 200:
+            return None
+        res = r.json().get("results", [])
+        if not res or not res[0].get("extensions"):
+            return None
+        ext = res[0]["extensions"][0]
+        pub = ext.get("publisher", {})
+        ver = (ext.get("versions") or [{}])[0]
+        fid = f"{pub.get('publisherName')}.{ext.get('extensionName')}"
+        if fid.lower() != pkg.lower():
+            return None
+        inst = next((int(s.get("value", 0)) for s in (ext.get("statistics") or [])
+                     if s.get("statisticName") == "install"), 0)
+        pub_name = pub.get("displayName") or pub.get("publisherName", "—")
+        return {
+            "version":      ver.get("version", "N/A"),
+            "maintainer":   f"Org · {pub_name}",
+            "cves":         "—",
+            "license":      "—",
+            "last_updated": (ver.get("lastUpdated", "") or "")[:10] or "—",
+            "downloads":    f"{inst:,}" if inst else "—",
+        }
+    except Exception:
+        return None
+
+
+def fetch_winget(pkg):
+    try:
+        headers = {"User-Agent": "RegistryMonitorJob/1.0"}
+        pkg = pkg.strip()
+        # Stage 1: exact ID lookup
+        r = requests.get(
+            f"https://api.winget.run/v2/packages/{requests.utils.quote(pkg)}",
+            timeout=TIMEOUT, headers=headers
+        )
+        if r.status_code == 200:
+            d = r.json()
+            if isinstance(d, dict) and ("Id" in d or "PackageIdentifier" in d):
+                pid = d.get("Id") or d.get("PackageIdentifier", "")
+                latest = d.get("Latest") or {}
+                versions = d.get("Versions") or []
+                ver = versions[0] if versions else latest.get("PackageVersion", "N/A")
+                pub = latest.get("Publisher") or ""
+                return {
+                    "version":      ver or "N/A",
+                    "maintainer":   f"Org · {pub}" if pub else "—",
+                    "cves":         "—",
+                    "license":      latest.get("License", "—") or "—",
+                    "last_updated": (d.get("UpdatedAt", "") or "")[:10] or "—",
+                    "downloads":    "—",
+                }
+        # Stage 2: search
+        r = requests.get(
+            f"https://api.winget.run/v2/packages?query={requests.utils.quote(pkg)}&limit=10",
+            timeout=TIMEOUT, headers=headers
+        )
+        if r.status_code == 200:
+            d = r.json()
+            pkgs = d if isinstance(d, list) else d.get("Packages") or d.get("packages") or []
+            pkg_norm = re.sub(r"[^a-z0-9]", "", pkg.lower())
+            for p in pkgs:
+                pid = (p.get("Id") or p.get("PackageIdentifier") or "").lower()
+                name = (p.get("Latest", {}).get("Name") or "").lower()
+                if (re.sub(r"[^a-z0-9]", "", name) == pkg_norm or
+                        re.sub(r"[^a-z0-9]", "", pid.split(".")[-1]) == pkg_norm):
+                    latest = p.get("Latest") or {}
+                    versions = p.get("Versions") or []
+                    ver = versions[0] if versions else "N/A"
+                    pub = latest.get("Publisher") or ""
+                    return {
+                        "version":      ver,
+                        "maintainer":   f"Org · {pub}" if pub else "—",
+                        "cves":         "—",
+                        "license":      latest.get("License", "—") or "—",
+                        "last_updated": (p.get("UpdatedAt", "") or "")[:10] or "—",
+                        "downloads":    "—",
+                    }
+        return None
+    except Exception:
+        return None
+
+
 # Registry → fetch function map
 REGISTRY_FETCHERS = {
-    "NPM":           fetch_npm,
-    "PyPI":          fetch_pypi,
-    "RubyGems":      fetch_rubygems,
-    "NuGet":         fetch_nuget,
-    "GitHub":        fetch_github,
-    "Crates.io":     fetch_crates,
-    "Maven Central": fetch_maven,
+    "NPM":                fetch_npm,
+    "PyPI":               fetch_pypi,
+    "RubyGems":           fetch_rubygems,
+    "NuGet":              fetch_nuget,
+    "GitHub":             fetch_github,
+    "Crates.io":          fetch_crates,
+    "Maven Central":      fetch_maven,
+    "Packagist":          fetch_packagist,
+    "Homebrew":           fetch_homebrew,
+    "WordPress Plugins":  fetch_wordpress_plugins,
+    "VS Code Marketplace": fetch_vscode,
+    "Winget":             fetch_winget,
 }
 
 # ── Logging ────────────────────────────────────────────────────────────────────
@@ -868,12 +1118,14 @@ def main():
         if not fetcher:
             log(f"  SKIP — no fetcher for registry '{registry}'")
             skipped += 1
+            update_checked(library, registry)
             continue
 
         new_snap = fetcher(library)
         if not new_snap:
             log(f"  SKIP — registry returned no data")
             skipped += 1
+            update_checked(library, registry)
             continue
 
         log(f"  version={new_snap.get('version')}  "

@@ -8,7 +8,8 @@
 # After that, monitor_job.py re-checks everything daily — no UI needed.
 #
 # Supported registries:
-#   NPM, PyPI, RubyGems, NuGet, Crates.io, Maven Central, GitHub
+#   NPM, PyPI, RubyGems, NuGet, Crates.io, Maven Central, GitHub,
+#   Packagist, Homebrew, WordPress Plugins
 #
 # GitHub repos  → paste the full URL: https://github.com/owner/repo
 # Maven         → use groupId:artifactId format: com.google.guava:guava
@@ -63,9 +64,6 @@ packages:
   - name: jquery-migrate-rails
     registry: RubyGems
 
-  - name: jquery-migrate
-    registry: Maven Central
-
   - name: "@types/jquery-migrate"
     registry: NPM
 
@@ -81,9 +79,6 @@ packages:
   - name: jqueryui
     registry: Packagist
 
-  - name: jquery-ui
-    registry: Maven Central
-
   - name: jquery-ui-touch-punch
     registry: NPM
 
@@ -93,17 +88,11 @@ packages:
   - name: lodash
     registry: NuGet
 
-  - name: lodash
-    registry: Maven Central
-
   - name: jquery
     registry: NPM
 
   - name: jQuery
     registry: NuGet
-
-  - name: jQuery
-    registry: Maven Central
 
   - name: Moment.js
     registry: NuGet
@@ -123,17 +112,8 @@ packages:
   - name: d3
     registry: NuGet
 
-  - name: D3
-    registry: Maven Central
-
   - name: d3
     registry: Packagist
-
-  - name: three.js
-    registry: Packagist
-
-  - name: three.js
-    registry: Maven Central
 
   - name: three
     registry: NPM
@@ -144,17 +124,11 @@ packages:
   - name: chart.js
     registry: NPM
 
-  - name: chart.js
-    registry: Maven Central
-
   - name: Hammer.js
     registry: NuGet
 
   - name: socket.io
     registry: NPM
-
-  - name: socket.io-parser
-    registry: Maven Central
 
   - name: zepto
     registry: RubyGems
@@ -164,12 +138,6 @@ packages:
 
   - name: zepto
     registry: NuGet
-
-  - name: zepto
-    registry: Maven Central
-
-  - name: closure-library
-    registry: Maven Central
 
   - name: Closure_Library_Zip
     registry: NuGet
@@ -180,17 +148,11 @@ packages:
   - name: prototype
     registry: NPM
 
-  - name: prototype-taglib
-    registry: Maven Central
-
   - name: knockout
     registry: NPM
 
   - name: Backbone.js
     registry: NuGet
-
-  - name: backbone-js
-    registry: Maven Central
 
   - name: backbone
     registry: NPM
@@ -210,14 +172,8 @@ packages:
   - name: Marked
     registry: Crates.io
 
-  - name: marked
-    registry: Maven Central
-
   - name: core-js
     registry: NPM
-
-  - name: core-js
-    registry: Maven Central
 
   - name: modernizr
     registry: WordPress Plugins
@@ -231,29 +187,17 @@ packages:
   - name: modernizr
     registry: Packagist
 
-  - name: modernizr
-    registry: Maven Central
-
   - name: zone.js
     registry: NPM
-
-  - name: zone.js
-    registry: Maven Central
 
   - name: clipboard
     registry: NPM
-
-  - name: clipboard.js
-    registry: Maven Central
 
   - name: lazysizes
     registry: WordPress Plugins
 
   - name: lazysizes
     registry: NPM
-
-  - name: lazysizes
-    registry: Maven Central
 
   - name: dropzone
     registry: RubyGems
@@ -270,17 +214,11 @@ packages:
   - name: dropzone
     registry: NuGet
 
-  - name: dropzone
-    registry: Maven Central
-
   - name: aos
     registry: RubyGems
 
   - name: aos
     registry: NPM
-
-  - name: aos-commons
-    registry: Maven Central
 
   - name: slick
     registry: RubyGems
@@ -297,17 +235,11 @@ packages:
   - name: Slick
     registry: PyPI
 
-  - name: Slick
-    registry: Maven Central
-
   - name: swiper
     registry: NPM
 
   - name: swiper
     registry: Packagist
-
-  - name: swiper
-    registry: Maven Central
 
   - name: popper
     registry: WordPress Plugins
@@ -318,35 +250,20 @@ packages:
   - name: "@popperjs/core"
     registry: NPM
 
-  - name: popper.js
-    registry: Maven Central
-
   - name: select2
     registry: NPM
 
   - name: select2
     registry: Packagist
 
-  - name: wicketstuff-select2-parent
-    registry: Maven Central
-
   - name: splide
     registry: NPM
-
-  - name: splidejs__splide
-    registry: Maven Central
 
   - name: lightbox2
     registry: NPM
 
-  - name: lightbox2-parent
-    registry: Maven Central
-
   - name: lottiefiles
     registry: WordPress Plugins
-
-  - name: lottiefiles__lottie-player
-    registry: Maven Central
 
   - name: fancybox
     registry: NPM
@@ -354,14 +271,8 @@ packages:
   - name: Fancybox
     registry: NuGet
 
-  - name: fancybox
-    registry: Maven Central
-
   - name: PDF.js
     registry: NuGet
-
-  - name: pdf-js
-    registry: Maven Central
 
   - name: pdf.js
     registry: NPM
@@ -375,9 +286,6 @@ packages:
   - name: ckeditor
     registry: NPM
 
-  - name: ckeditor__ckeditor5-core
-    registry: Maven Central
-
   - name: prism
     registry: WordPress Plugins
 
@@ -390,14 +298,8 @@ packages:
   - name: Prism
     registry: PyPI
 
-  - name: Prism
-    registry: Winget
-
   - name: prism
     registry: Homebrew
-
-  - name: prism
-    registry: Maven Central
 
   - name: prism
     registry: Packagist
@@ -407,9 +309,6 @@ packages:
 
   - name: codemirror
     registry: NPM
-
-  - name: codemirror-graphql
-    registry: Maven Central
 
   - name: froala-editor
     registry: NPM
@@ -435,9 +334,6 @@ packages:
   - name: Quill
     registry: Crates.io
 
-  - name: quill-engine_2.13
-    registry: Maven Central
-
   - name: fullcalendar
     registry: WordPress Plugins
 
@@ -452,9 +348,6 @@ packages:
 
   - name: fullcalendar
     registry: Packagist
-
-  - name: fullcalendar
-    registry: Maven Central
 
   - name: datatables
     registry: RubyGems
@@ -465,17 +358,11 @@ packages:
   - name: datatables
     registry: NPM
 
-  - name: datatables-parent
-    registry: Maven Central
-
   - name: toastr
     registry: NPM
 
   - name: toastr
     registry: NuGet
-
-  - name: toastr
-    registry: Maven Central
 
   - name: toastr
     registry: Packagist
@@ -486,14 +373,8 @@ packages:
   - name: lit-html
     registry: Crates.io
 
-  - name: lit-html
-    registry: Maven Central
-
   - name: lit-element
     registry: NPM
-
-  - name: lit-element
-    registry: Maven Central
 
   - name: Lucide
     registry: PyPI
@@ -501,20 +382,11 @@ packages:
   - name: lucide
     registry: NPM
 
-  - name: lucide-react
-    registry: Maven Central
-
   - name: gsap
     registry: NPM
 
-  - name: gsap-js
-    registry: Maven Central
-
   - name: framer-motion
     registry: NPM
-
-  - name: framer-motion
-    registry: Maven Central
 
   - name: bootstrap
     registry: WordPress Plugins
@@ -537,17 +409,11 @@ packages:
   - name: bootstrap
     registry: Packagist
 
-  - name: bootstrap-web-parent
-    registry: Maven Central
-
   - name: animate.css
     registry: NPM
 
   - name: animate.css
     registry: NuGet
-
-  - name: animate.css
-    registry: Maven Central
 
   - name: bulma
     registry: RubyGems
@@ -558,17 +424,11 @@ packages:
   - name: Bulma
     registry: PyPI
 
-  - name: bulma
-    registry: Maven Central
-
   - name: Emotion
     registry: PyPI
 
   - name: emotion
     registry: NPM
-
-  - name: emotion__cache
-    registry: Maven Central
 
   - name: Emotion
     registry: NuGet
@@ -579,32 +439,14 @@ packages:
   - name: styled-components
     registry: Crates.io
 
-  - name: styled-components
-    registry: Maven Central
-
   - name: "@chakra-ui/react"
     registry: NPM
 
-  - name: chakra-ui__react-use-event-listener
-    registry: Maven Central
-
   - name: "@mui/material"
     registry: NPM
-
-  - name: mui__material
-    registry: Maven Central
-
-  - name: radix-ui__react-toast
-    registry: Maven Central
 
   - name: radix-ui
     registry: NPM
 
   - name: element-ui-for-gov
     registry: NPM
-
-  - name: element-ui-helper
-    registry: VS Code Marketplace
-
-  - name: element-ui
-    registry: Maven Central
