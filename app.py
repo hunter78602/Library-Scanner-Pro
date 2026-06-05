@@ -6562,22 +6562,28 @@ class GitHubRepoAdapter(BaseAdapter):
             return None
 
         # Search for repos — prefer exact name match, else highest-starred
-        try:
-            r = requests.get(
-                f"https://api.github.com/search/repositories"
-                f"?q={requests.utils.quote(pkg)}+in:name&sort=stars&per_page=10",
-                headers=headers, timeout=TIMEOUT)
-            if r.status_code != 200:
+        # Retry once on rate-limit (403/429): parallel adapter threads can
+        # collectively hit GitHub Search's 30 req/min limit.
+        for _attempt in range(2):
+            try:
+                r = requests.get(
+                    f"https://api.github.com/search/repositories"
+                    f"?q={requests.utils.quote(pkg)}+in:name&sort=stars&per_page=10",
+                    headers=headers, timeout=TIMEOUT)
+                if r.status_code == 200:
+                    items = r.json().get("items", [])
+                    if not items:
+                        return None
+                    exact = next((i for i in items if i["name"].lower() == pkg.lower()), None)
+                    repo  = exact or items[0]
+                    return self._row_from(repo)
+                if r.status_code in (403, 429) and _attempt == 0:
+                    import time as _time; _time.sleep(2)
+                    continue
                 return None
-            items = r.json().get("items", [])
-            if not items:
+            except Exception:
                 return None
-            # Prefer exact name match (case-insensitive)
-            exact = next((i for i in items if i["name"].lower() == pkg.lower()), None)
-            repo  = exact or items[0]
-            return self._row_from(repo)
-        except Exception:
-            return None
+        return None
 
     def _row_from(self, repo: dict) -> dict:
         owner     = repo.get("owner", {})
