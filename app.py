@@ -1393,7 +1393,7 @@ _KNOWN_ORG_COUNTRY: dict[str, str] = {
     "gatsbyjs":"United States","prisma":"United States",
     "supabase":"United States","mongodb":"United States","postgres":"United States",
     "postgresql":"United States","redis":"United States","memcached":"United States",
-    "axios":"United States","sindresorhus":"United States","substack":"United States",
+    "sindresorhus":"United States","substack":"United States",
     "tj":"United States","gaearon":"United States","sebmarkbage":"United States",
     "addyosmani":"United States","feross":"United States","kentcdodds":"United States",
     "psf":"United States","matplotlib":"United States","numpy":"United States",
@@ -1561,8 +1561,8 @@ _KNOWN_ORG_COUNTRY: dict[str, str] = {
     # popper
     "atomiks":"United Kingdom","popperjs":"United Kingdom",
     "floating-ui":"United Kingdom",
-    # axios, jQuery UI, etc.
-    "axios":"United States","jasonsaayman":"South Africa",
+    # axios — jasonsaayman (South Africa) is current maintainer, resolved via live GitHub API
+    "jasonsaayman":"South Africa",
     # Bootstrap-related
     "mdo":"United States","fat":"United States",  # Mark Otto, Jacob Thornton
     # Animation
@@ -1648,31 +1648,22 @@ def _fetch_github_country(username: str, token: str = "",
     if not username or username in ("—", ""):
         return "Unknown"
 
-    # 0. Known-org override — protects against unreliable GitHub profile data.
-    #    Example: github.com/facebook has empty location → API says "Unknown",
-    #    but Meta is clearly USA-based.  Without this, React shows "Unknown".
-    #    Skipped when called from _country_via_repo_search (skip_hardcode=True)
-    #    to avoid cross-registry contamination (repo search finds lodash/lodash
-    #    → should NOT inherit the JS-ecosystem hardcode for Maven packages).
-    if not skip_hardcode and username.lower() in _KNOWN_ORG_COUNTRY:
-        return _KNOWN_ORG_COUNTRY[username.lower()]
-
-    # 1. SQLite persistent cache — but only trust REAL country results.
-    #    If we previously cached "Unknown" it might have been due to a missing
-    #    location field, a normalization gap (like "Cyprus, Larnaca" before we
-    #    added Cyprus), or rate limiting. Always retry these.
+    # 0. DB cache — 24-hour TTL, only trust real country results.
     cached = _country_cache_get(username)
     if cached is not None and cached not in ("Unknown", "⚠️ Rate Limited", ""):
         return cached
 
-    # 2. GitHub API — try variants until one returns 200
+    # 1. GitHub API — live lookup, always tried first before any hardcoded map.
+    #    Priority: repo owner live location → if Org with no location → "❓ Org"
+    #    so the caller (Signal 2) can check the individual maintainer's profile.
     headers = {"User-Agent": "RegistryIntelligencePlatform/1.0",
                "Accept":     "application/vnd.github+json"}
     if token:
         headers["Authorization"] = f"Bearer {token}"
 
-    rate_limited    = False
-    profile_found   = False   # True once any variant returns HTTP 200
+    rate_limited  = False
+    profile_found = False
+    api_result    = None   # "❓ Org" / "Unknown" / None
     for variant in _username_variants(username):
         try:
             r = requests.get(f"https://api.github.com/users/{variant}",
@@ -1682,38 +1673,41 @@ def _fetch_github_country(username: str, token: str = "",
                 data    = r.json()
                 loc     = data.get("location") or ""
                 country = _normalize_country(loc)
-                # Only cache REAL countries — never cache "Unknown" so a
-                # subsequent run will retry (e.g. after a normalizer update)
                 if country and country != "Unknown":
                     _country_cache_set(username, country)
-                if country != "Unknown":
                     return country
-                # Location is empty or unrecognised.
-                # Distinguish Organisation vs User so the caller can decide
-                # whether to fall through to the individual maintainer signal:
-                #   "❓ Org"  → GitHub Organisation with no location set.
-                #               The repo owner is an org, but the individual
-                #               maintainer (uname) may still have a location.
-                #               Caller SHOULD try the next signal.
-                #   "Unknown" → GitHub User with no location set.
-                #               This person chose not to share their location.
-                #               Caller must NOT guess via a different name.
-                if data.get("type") == "Organization":
-                    return "❓ Org"
-                return "Unknown"
+                # Profile found but no location set.
+                #   "❓ Org"  → GitHub Organisation — caller should try individual maintainer.
+                #   "Unknown" → individual user who chose not to share location.
+                api_result = "❓ Org" if data.get("type") == "Organization" else "Unknown"
+                break
             if r.status_code in (403, 429):
                 rate_limited = True
-                break          # don't keep hitting a rate-limited API
-            # 404 means this variant doesn't exist — try the next one
+                break
         except Exception:
             continue
 
     if rate_limited:
-        return "⚠️ Rate Limited"   # do NOT cache — retry when limit resets
+        return "⚠️ Rate Limited"
 
-    # All variants returned 404 → no GitHub profile found at all.
-    # Return a special sentinel so _enrich_countries knows repo-search is allowed.
-    # (Different from "Unknown" which means "profile found, location empty".)
+    # Return "❓ Org" immediately — let Signal 2 check the individual maintainer.
+    # Do NOT override with hardcoded map here; the maintainer's live location
+    # is more accurate than a static entry written when the project had a different owner.
+    if api_result == "❓ Org":
+        return "❓ Org"
+
+    # 2. Hardcoded map — last resort only.
+    #    Used when: (a) no GitHub profile exists at all ("❓ No Profile"), OR
+    #               (b) individual user has no location set ("Unknown").
+    #    Covers big-tech orgs (facebook, google) where the org profile is empty
+    #    AND the individual maintainer signal is also absent.
+    #    Skipped for repo-search calls (skip_hardcode=True) to avoid cross-registry
+    #    contamination.
+    if not skip_hardcode and username.lower() in _KNOWN_ORG_COUNTRY:
+        hardcoded = _KNOWN_ORG_COUNTRY[username.lower()]
+        _country_cache_set(username, hardcoded)
+        return hardcoded
+
     if not profile_found:
         return "❓ No Profile"
 
@@ -4691,14 +4685,15 @@ class NPMAdapter(BaseAdapter):
         _mlist = d.get("maintainers") or []
         _primary_email = (_mlist[0].get("email", "") if _mlist and isinstance(_mlist[0], dict) else "")
         _npm_email_dom = _email_domain(_primary_email)
-        # Source button → always the npm page for this package.
-        # Country lookup → use the REAL GitHub org from the repo URL,
-        # not the npm publish-account name (e.g. "fb" → "facebook").
+        # Source button → GitHub repo if available, otherwise npm page.
+        # Country lookup → use the REAL GitHub org from the repo URL.
+        _gh_owner = _gh_owner_from_url(repo)
+        _display_repo = _clean_repo_url(repo) or f"https://www.npmjs.com/package/{pkg}"
         return _row(pkg, "NPM", v, d.get("description",""), d.get("license",""),
                     dl, m, c,
-                    f"https://www.npmjs.com/package/{pkg}",
+                    _display_repo,
                     last_updated=last_updated,
-                    gh_owner=_gh_owner_from_url(repo),
+                    gh_owner=_gh_owner,
                     maintainer_email_domain=_npm_email_dom)
 
     def search(self, q, **kw):
@@ -6546,6 +6541,84 @@ class ECRPublicAdapter(BaseAdapter):
         return []
 
 
+class GitHubRepoAdapter(BaseAdapter):
+    """Show the top-matching GitHub repository for a package name."""
+
+    def fetch(self, pkg: str, **kw) -> "dict | None":
+        token = kw.get("github_token", "")
+        headers = {"Accept": "application/vnd.github+json",
+                   "User-Agent": "RegistryIntelligencePlatform/1.0"}
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+
+        # Try exact owner/repo first if user passed a full path like "axios/axios"
+        if "/" in pkg:
+            r = requests.get(f"https://api.github.com/repos/{pkg}",
+                             headers=headers, timeout=TIMEOUT)
+            if r.status_code == 200:
+                return self._row_from(r.json())
+            return None
+
+        # Search for repos — prefer exact name match, else highest-starred
+        try:
+            r = requests.get(
+                f"https://api.github.com/search/repositories"
+                f"?q={requests.utils.quote(pkg)}+in:name&sort=stars&per_page=10",
+                headers=headers, timeout=TIMEOUT)
+            if r.status_code != 200:
+                return None
+            items = r.json().get("items", [])
+            if not items:
+                return None
+            # Prefer exact name match (case-insensitive)
+            exact = next((i for i in items if i["name"].lower() == pkg.lower()), None)
+            repo  = exact or items[0]
+            return self._row_from(repo)
+        except Exception:
+            return None
+
+    def _row_from(self, repo: dict) -> dict:
+        owner     = repo.get("owner", {})
+        owner_login = owner.get("login", "")
+        owner_type  = owner.get("type", "User")
+        maintainer  = _m_org(owner_login) if owner_type == "Organization" else _m_user(owner_login)
+        license_val = (repo.get("license") or {}).get("spdx_id") or "—"
+        if license_val in ("NOASSERTION", "OTHER", ""):
+            license_val = "—"
+        last_updated = (repo.get("updated_at") or "—")[:10]
+        stars        = repo.get("stargazers_count", 0)
+        return _row(
+            repo.get("full_name", repo.get("name", "")),
+            "GitHub",
+            repo.get("default_branch", "N/A"),
+            repo.get("description") or "—",
+            license_val,
+            stars,
+            maintainer,
+            "—",
+            repo.get("html_url", ""),
+            last_updated=last_updated,
+            gh_owner=owner_login,
+        )
+
+    def search(self, q: str, **kw):
+        token = kw.get("github_token", "")
+        headers = {"Accept": "application/vnd.github+json",
+                   "User-Agent": "RegistryIntelligencePlatform/1.0"}
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+        try:
+            r = requests.get(
+                f"https://api.github.com/search/repositories"
+                f"?q={requests.utils.quote(q)}+in:name&sort=stars&per_page={SEARCH_LIMIT}",
+                headers=headers, timeout=TIMEOUT)
+            if r.status_code != 200:
+                return []
+            return [self._row_from(i) for i in r.json().get("items", [])]
+        except Exception:
+            return []
+
+
 # ── Scan engine ────────────────────────────────────────────────────────────────
 TIER1 = [
     PyPIAdapter(), NPMAdapter(), RubyGemsAdapter(), CratesAdapter(), PackagistAdapter(),
@@ -6554,6 +6627,7 @@ TIER1 = [
     TerraformAdapter(), AnsibleGalaxyAdapter(), ChocolateyAdapter(), VSCodeAdapter(),
     # New registries
     LinuxDistribAdapter(), WingetAdapter(), ChromeWebStoreAdapter(), ECRPublicAdapter(),
+    GitHubRepoAdapter(),
 ]
 
 def run_audit(query, github_token=None, kaggle_username=None, kaggle_key=None,
@@ -9445,7 +9519,7 @@ with _dash_col4:
     _rpt_pkgs    = _monitored_get_all()
     _rpt_alerts  = _alerts_get_all(limit=500)
     _rpt_now     = datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
-    _rpt_24h_cutoff = datetime.datetime.utcnow() - datetime.timedelta(hours=24)
+    _rpt_24h_cutoff = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=24)
     _rpt_checked_24h = sum(
         1 for p in _rpt_pkgs
         if p.get("last_checked") and p["last_checked"] > _rpt_24h_cutoff
