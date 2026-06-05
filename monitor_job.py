@@ -245,6 +245,14 @@ def write_alerts(library, registry, old_snap, new_snap):
                 return s.split(',')[0].strip().lower()
             if _first_name(old_val) == _first_name(new_val):
                 continue
+            # WebJars/mvnpm group change — same org family, not a real maintainer change
+            _WEBJARS = {"org.webjars.npm", "org.webjars.bower", "org.webjars", "org.mvnpm"}
+            def _extract_group(m):
+                if '·' in m:
+                    return m.split('·', 1)[1].strip().lower()
+                return m.strip().lower()
+            if _extract_group(old_val) in _WEBJARS and _extract_group(new_val) in _WEBJARS:
+                continue
         elif field == "maintainer_email_domain":
             old_d = old_val.lower().strip()
             new_d = new_val.lower().strip()
@@ -256,14 +264,14 @@ def write_alerts(library, registry, old_snap, new_snap):
             if _skip:
                 continue
         elif field == "last_updated":
-            # Only alert when the date shift is significant (>30 days).
-            # Active packages update every few days — that's normal, not a signal.
-            # Meaningful cases: dormant package suddenly active, or big gap in activity.
+            # Only alert when the date moves FORWARD by >30 days.
+            # Backwards = fetching from different source (false positive).
             try:
                 import datetime as _dt
                 old_dt = _dt.datetime.strptime(old_val[:10], "%Y-%m-%d")
                 new_dt = _dt.datetime.strptime(new_val[:10], "%Y-%m-%d")
-                if abs((new_dt - old_dt).days) < 30:
+                diff = (new_dt - old_dt).days
+                if diff <= 30:
                     continue
             except Exception:
                 pass
