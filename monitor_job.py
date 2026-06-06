@@ -987,6 +987,38 @@ def notify_slack(all_alerts):
         log(f"Slack notification error: {e}")
 
 
+def _registry_url(library, registry):
+    """Return a direct URL to the package page on its registry."""
+    pkg = library
+    if registry == "NPM":
+        return f"https://www.npmjs.com/package/{pkg}"
+    if registry == "PyPI":
+        return f"https://pypi.org/project/{pkg}"
+    if registry == "RubyGems":
+        return f"https://rubygems.org/gems/{pkg}"
+    if registry == "NuGet":
+        return f"https://www.nuget.org/packages/{pkg}"
+    if registry == "GitHub":
+        repo = pkg if "/" in pkg else pkg
+        return f"https://github.com/{repo}"
+    if registry == "Crates.io":
+        return f"https://crates.io/crates/{pkg}"
+    if registry == "Maven Central":
+        if ":" in pkg:
+            g, a = pkg.split(":", 1)
+            return f"https://central.sonatype.com/artifact/{g}/{a}"
+        return f"https://central.sonatype.com/search?q={pkg}"
+    if registry == "Packagist":
+        return f"https://packagist.org/packages/{pkg}"
+    if registry == "Homebrew":
+        return f"https://formulae.brew.sh/formula/{pkg}"
+    if registry == "WordPress Plugins":
+        return f"https://wordpress.org/plugins/{pkg}"
+    if registry == "VS Code Marketplace":
+        return f"https://marketplace.visualstudio.com/items?itemName={pkg}"
+    return ""
+
+
 def notify_telegram(all_alerts):
     """Send a Telegram message via Bot API. Only runs if TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID are set."""
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID or not all_alerts:
@@ -1007,9 +1039,11 @@ def notify_telegram(all_alerts):
             fld   = _html.escape(str(field))
             old   = _html.escape(str(old_v)[:60])
             new   = _html.escape(str(new_v)[:60])
+            url   = _registry_url(library, registry)
+            link  = f'\n   <a href="{url}">View on {registry}</a>' if url else ""
             lines.append(
                 f"{emoji} <b>{sev.upper()}</b> — {lib} · {reg}\n"
-                f"   {fld}: <code>{old}</code> → <code>{new}</code>"
+                f"   {fld}: <code>{old}</code> → <code>{new}</code>{link}"
             )
         text = f"{header}\n\n" + "\n\n".join(lines)
         url  = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
