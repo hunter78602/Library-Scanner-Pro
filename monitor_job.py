@@ -93,7 +93,7 @@ MONITOR_FIELD_SEVERITY = {
     "maintainer":   "high",
     "last_updated": "high",
     "license":      "medium",
-    # version removed — routine bumps generate noise, not security signal
+    "version":      "info",
 }
 
 _DOMAIN_ALIASES = [
