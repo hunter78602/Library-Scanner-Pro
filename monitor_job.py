@@ -214,6 +214,9 @@ def write_alerts(library, registry, old_snap, new_snap):
             alerts.append(("medium", "version", _old_ver, _new_ver))
 
     for field, severity in MONITOR_FIELD_SEVERITY.items():
+        # GitHub version already handled above at "medium" severity — skip it here
+        if field == "version" and registry == "GitHub":
+            continue
         old_val = re.sub(r'\s+', ' ', str(old_snap.get(field, "") or "").strip())
         new_val = re.sub(r'\s+', ' ', str(new_snap.get(field, "") or "").strip())
 
@@ -1024,28 +1027,39 @@ def notify_telegram(all_alerts):
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID or not all_alerts:
         return
     import html as _html
+    from collections import OrderedDict
     try:
-        date   = datetime.datetime.utcnow().strftime("%Y-%m-%d")
-        count  = len(all_alerts)
+        date  = datetime.datetime.utcnow().strftime("%Y-%m-%d")
+        count = len(all_alerts)
         header = f"🚨 <b>Package Monitor Alert — {date}</b>\n<i>{count} change(s) detected</i>"
-        _order = {"critical": 0, "high": 1, "medium": 2, "info": 3}
-        sorted_alerts = sorted(all_alerts, key=lambda a: _order.get(a[2], 9))
+
+        _order     = {"critical": 0, "high": 1, "medium": 2, "info": 3}
         _sev_emoji = {"critical": "🚨", "high": "⚠️", "medium": "🔔", "info": "ℹ️"}
-        lines = []
-        for library, registry, sev, field, old_v, new_v in sorted_alerts:
-            emoji = _sev_emoji.get(sev, "•")
-            lib   = _html.escape(str(library))
-            reg   = _html.escape(str(registry))
-            fld   = _html.escape(str(field))
-            old   = _html.escape(str(old_v)[:60])
-            new   = _html.escape(str(new_v)[:60])
-            url   = _registry_url(library, registry)
-            link  = f'\n   <a href="{url}">View on {registry}</a>' if url else ""
-            lines.append(
-                f"{emoji} <b>{sev.upper()}</b> — {lib} · {reg}\n"
-                f"   {fld}: <code>{old}</code> → <code>{new}</code>{link}"
-            )
-        text = f"{header}\n\n" + "\n\n".join(lines)
+
+        # Group alerts by (library, registry), sorted by highest severity in group
+        groups = OrderedDict()
+        for alert in sorted(all_alerts, key=lambda a: _order.get(a[2], 9)):
+            key = (alert[0], alert[1])
+            groups.setdefault(key, []).append(alert)
+
+        blocks = []
+        for (library, registry), pkg_alerts in groups.items():
+            lib = _html.escape(str(library))
+            reg = _html.escape(str(registry))
+            url = _registry_url(library, registry)
+
+            lines = [f"📦 <b>{lib}</b> · {reg}"]
+            for _, _, sev, field, old_v, new_v in pkg_alerts:
+                emoji = _sev_emoji.get(sev, "•")
+                fld   = _html.escape(str(field))
+                old   = _html.escape(str(old_v)[:60])
+                new   = _html.escape(str(new_v)[:60])
+                lines.append(f"   {emoji} {fld}: <code>{old}</code> → <code>{new}</code>")
+            if url:
+                lines.append(f'   <a href="{url}">View on {registry}</a>')
+            blocks.append("\n".join(lines))
+
+        text = f"{header}\n\n" + "\n\n".join(blocks)
         url  = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
         r = requests.post(url, json={
             "chat_id":    TELEGRAM_CHAT_ID,
@@ -1053,7 +1067,7 @@ def notify_telegram(all_alerts):
             "parse_mode": "HTML",
         }, timeout=10)
         if r.status_code == 200:
-            log("Telegram notification sent ✓")
+            log("Telegram notification sent OK")
         else:
             log(f"Telegram notification failed: {r.status_code} {r.text}")
     except Exception as e:
