@@ -924,6 +924,311 @@ def fetch_winget(pkg):
         return None
 
 
+def fetch_go_modules(pkg):
+    try:
+        if "/" not in pkg:
+            return None
+        r = requests.get(f"https://proxy.golang.org/{pkg}/@latest", timeout=TIMEOUT)
+        if r.status_code != 200:
+            return None
+        d   = r.json()
+        ver = d.get("Version", "N/A")
+        lu  = (d.get("Time") or "")[:10] or "—"
+        lic = "—"
+        try:
+            enc     = requests.utils.quote(pkg, safe="")
+            ver_enc = requests.utils.quote(ver, safe="")
+            dr = requests.get(
+                f"https://api.deps.dev/v3alpha/systems/go/packages/{enc}/versions/{ver_enc}",
+                timeout=6)
+            if dr.status_code == 200:
+                lics = dr.json().get("licenses", [])
+                lic  = ", ".join(lics) if lics else "—"
+        except Exception:
+            pass
+        parts = pkg.split("/")
+        owner = parts[1] if len(parts) >= 2 else "—"
+        return {
+            "version":      ver,
+            "maintainer":   f"User · {owner}",
+            "cves":         "—",
+            "license":      lic,
+            "last_updated": lu,
+            "downloads":    "—",
+        }
+    except Exception:
+        return None
+
+
+def fetch_docker_hub(pkg):
+    try:
+        slug     = pkg.lower()
+        ns, nm   = slug.split("/", 1) if "/" in slug else ("library", slug)
+        r = requests.get(
+            f"https://hub.docker.com/v2/repositories/{ns}/{nm}/", timeout=TIMEOUT)
+        if r.status_code != 200:
+            return None
+        d         = r.json()
+        tag_count = d.get("tag_count", 0)
+        ver_label = f"{tag_count} tags" if tag_count else "see tags"
+        if d.get("is_official"):
+            maint = "Org · Docker Official"
+        elif ns == "library":
+            maint = "Org · Docker"
+        else:
+            maint = f"Org · {ns}"
+        lu = (d.get("last_updated") or "")[:10] or "—"
+        return {
+            "version":      ver_label,
+            "maintainer":   maint,
+            "cves":         "—",
+            "license":      "—",
+            "last_updated": lu,
+            "downloads":    f"{d.get('pull_count', 0):,}",
+        }
+    except Exception:
+        return None
+
+
+def fetch_hugging_face(pkg):
+    try:
+        r = requests.get(f"https://huggingface.co/api/models/{pkg}", timeout=TIMEOUT)
+        if r.status_code == 200:
+            d      = r.json()
+            lm     = (d.get("lastModified") or "")[:10] or "—"
+            card   = d.get("cardData") or {}
+            lic    = card.get("license", "—") or "—"
+            author = d.get("author", "") or (pkg.split("/")[0] if "/" in pkg else "—")
+            return {
+                "version":      lm,
+                "maintainer":   f"Org · {author}",
+                "cves":         "—",
+                "license":      lic,
+                "last_updated": lm,
+                "downloads":    f"{d.get('downloads', 0):,}",
+            }
+        r2 = requests.get(
+            f"https://huggingface.co/api/models?search={pkg}&limit=1&sort=downloads",
+            timeout=TIMEOUT)
+        if r2.status_code == 200:
+            res = r2.json()
+            if res:
+                d      = res[0]
+                mid    = d.get("id", pkg)
+                lm     = (d.get("lastModified") or "")[:10] or "—"
+                author = d.get("author", "") or (mid.split("/")[0] if "/" in mid else "—")
+                return {
+                    "version":      lm,
+                    "maintainer":   f"Org · {author}",
+                    "cves":         "—",
+                    "license":      "—",
+                    "last_updated": lm,
+                    "downloads":    f"{d.get('downloads', 0):,}",
+                }
+        return None
+    except Exception:
+        return None
+
+
+def fetch_terraform(pkg):
+    try:
+        r = requests.get(
+            f"https://registry.terraform.io/v1/modules?q={pkg}&limit=5",
+            timeout=TIMEOUT)
+        if r.status_code != 200:
+            return None
+        mods = r.json().get("modules", [])
+        if not mods:
+            return None
+        mo = next(
+            (m for m in mods if m.get("name", "").lower() == pkg.lower()),
+            mods[0]
+        )
+        namespace = mo.get("id", "").split("/")[0] if "/" in mo.get("id", "") else "—"
+        lu = (mo.get("published_at") or "")[:10] or "—"
+        return {
+            "version":      mo.get("version", "N/A"),
+            "maintainer":   f"Org · {namespace}",
+            "cves":         "—",
+            "license":      "MPL-2.0",
+            "last_updated": lu,
+            "downloads":    f"{mo.get('downloads', 0):,}",
+        }
+    except Exception:
+        return None
+
+
+def fetch_ansible_galaxy(pkg):
+    try:
+        if "." not in pkg:
+            return None
+        r = requests.get(
+            f"https://galaxy.ansible.com/api/v1/roles/?name={pkg}&page_size=1"
+            f"&ordering=-download_count",
+            timeout=TIMEOUT)
+        if r.status_code != 200:
+            return None
+        res = r.json().get("results", [])
+        if not res:
+            return None
+        d  = res[0]
+        ns = (d.get("summary_fields") or {}).get("namespace", {}).get("name", "—")
+        lu = (d.get("modified") or "")[:10] or "—"
+        return {
+            "version":      d.get("version", "N/A"),
+            "maintainer":   f"User · {ns}",
+            "cves":         "—",
+            "license":      "—",
+            "last_updated": lu,
+            "downloads":    f"{d.get('download_count', 0):,}",
+        }
+    except Exception:
+        return None
+
+
+def fetch_chocolatey(pkg):
+    try:
+        r = requests.get(
+            f"https://community.chocolatey.org/api/v2/Packages()?"
+            f"$filter=Id eq '{pkg}' and IsLatestVersion eq true&$format=json",
+            timeout=12)
+        if r.status_code != 200:
+            return None
+        data    = r.json()
+        entries = data.get("d", {}).get("results", []) or data.get("value", [])
+        if not entries:
+            return None
+        e   = entries[0]
+        raw = e.get("Published") or e.get("LastEdited") or ""
+        lu  = raw[:10] if raw else "—"
+        return {
+            "version":      e.get("Version", "N/A"),
+            "maintainer":   "Community · Chocolatey",
+            "cves":         "—",
+            "license":      "—",
+            "last_updated": lu,
+            "downloads":    f"{e.get('DownloadCount', 0):,}",
+        }
+    except Exception:
+        return None
+
+
+def fetch_chrome_web_store(pkg):
+    """pkg must be a 32-character Chrome extension ID."""
+    try:
+        if not re.match(r'^[a-z]{32}$', pkg.lower()):
+            return None
+        url = (
+            "https://chrome.google.com/webstore/ajax/item"
+            "?hl=en-US&gl=US&pv=20210820"
+            "&mce=atf,nav,pid,rtr,rlb,svp,wtd,rae,hcr,bm,mos,sc,iap"
+            f"&action=detail&id={pkg}"
+        )
+        r = requests.get(
+            url, timeout=TIMEOUT,
+            headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                                   "AppleWebKit/537.36"})
+        if r.status_code != 200:
+            return None
+        text = re.sub(r"^\)\]\}'\\?\n?", "", r.text.strip(), flags=re.MULTILINE)
+        import json as _json
+        data = _json.loads(text)
+        item = (data[0][1] or [[]])[0]
+        return {
+            "version":      item[7] or "N/A",
+            "maintainer":   f"Org · {item[8]}" if item[8] else "—",
+            "cves":         "—",
+            "license":      "—",
+            "last_updated": "—",
+            "downloads":    f"{int(item[23] or 0):,}" if item[23] else "—",
+        }
+    except Exception:
+        return None
+
+
+def fetch_ecr_public(pkg):
+    try:
+        tok_r = requests.get(
+            "https://public.ecr.aws/token/?service=public.ecr.aws&scope=repository:*:pull",
+            timeout=8)
+        tok   = tok_r.json().get("token", "") if tok_r.status_code == 200 else ""
+        hdrs  = {"Authorization": f"Bearer {tok}"} if tok else {}
+        parts = pkg.split("/", 1)
+        alias = parts[0] if len(parts) == 2 else ""
+        repo  = parts[-1]
+        ep    = (f"https://api.us-east-1.gallery.ecr.aws/repositoryCatalogData/{alias}/{repo}"
+                 if alias else
+                 f"https://api.us-east-1.gallery.ecr.aws/repositoryCatalogData/{repo}")
+        r = requests.get(ep, headers=hdrs, timeout=TIMEOUT)
+        if r.status_code != 200:
+            return None
+        d = r.json()
+        return {
+            "version":      "latest",
+            "maintainer":   f"Org · {alias}" if alias else "—",
+            "cves":         "—",
+            "license":      "—",
+            "last_updated": "—",
+            "downloads":    f"{d.get('downloadCount', 0):,}",
+        }
+    except Exception:
+        return None
+
+
+def _fetch_repology(pkg, preferred_repos):
+    """Fetch package info from Repology for a specific set of repo keys."""
+    try:
+        r = requests.get(
+            f"https://repology.org/api/v1/project/{requests.utils.quote(pkg.lower())}",
+            timeout=TIMEOUT,
+            headers={"User-Agent": "LibraryScannerPro/1.0"})
+        if r.status_code != 200:
+            return None
+        pkg_l = pkg.lower()
+        for entry in r.json():
+            if entry.get("repo") not in preferred_repos:
+                continue
+            srcname = entry.get("srcname", "").lower()
+            binname = entry.get("binname", "").lower()
+            visname = entry.get("visiblename", "").lower()
+            is_main = (srcname == pkg_l and binname == srcname) or visname == pkg_l
+            if not is_main:
+                continue
+            maint = ", ".join(entry.get("maintainers", [])[:2]) or "—"
+            lic   = ", ".join(entry.get("licenses",    [])[:2]) or "—"
+            return {
+                "version":      entry.get("version", "N/A"),
+                "maintainer":   f"User · {maint}" if maint != "—" else "—",
+                "cves":         "—",
+                "license":      lic,
+                "last_updated": "—",
+                "downloads":    "—",
+            }
+        return None
+    except Exception:
+        return None
+
+
+def fetch_apt_debian(pkg):
+    return _fetch_repology(pkg, {"debian_13", "debian_12"})
+
+
+def fetch_apt_ubuntu(pkg):
+    return _fetch_repology(pkg, {"ubuntu_24_04", "ubuntu_22_04"})
+
+
+def fetch_apk_alpine(pkg):
+    return _fetch_repology(pkg, {"alpine_3_21", "alpine_3_20"})
+
+
+def fetch_yum_fedora(pkg):
+    return _fetch_repology(pkg, {"fedora_41", "fedora_40"})
+
+
+def fetch_yum_centos(pkg):
+    return _fetch_repology(pkg, {"centos_stream_9"})
+
+
 # Registry → fetch function map
 REGISTRY_FETCHERS = {
     "NPM":                fetch_npm,
@@ -938,6 +1243,19 @@ REGISTRY_FETCHERS = {
     "WordPress Plugins":  fetch_wordpress_plugins,
     "VS Code Marketplace": fetch_vscode,
     "Winget":             fetch_winget,
+    "Go Modules":         fetch_go_modules,
+    "Docker Hub":         fetch_docker_hub,
+    "Hugging Face":       fetch_hugging_face,
+    "Terraform Registry": fetch_terraform,
+    "Ansible Galaxy":     fetch_ansible_galaxy,
+    "Chocolatey":         fetch_chocolatey,
+    "Chrome Web Store":   fetch_chrome_web_store,
+    "ECR Public":         fetch_ecr_public,
+    "APT/Debian":         fetch_apt_debian,
+    "APT/Ubuntu":         fetch_apt_ubuntu,
+    "APK/Alpine":         fetch_apk_alpine,
+    "YUM/Fedora":         fetch_yum_fedora,
+    "YUM/CentOS":         fetch_yum_centos,
 }
 
 # ── Logging ────────────────────────────────────────────────────────────────────
