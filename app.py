@@ -2487,6 +2487,63 @@ _SEV_LABEL = {
     "critical": "Critical",
 }
 
+# ── Typosquatting data ────────────────────────────────────────────────────────
+_POPULAR_PYPI: set = {
+    "numpy", "pandas", "requests", "scipy", "matplotlib", "pillow",
+    "tensorflow", "torch", "scikit-learn", "flask", "django", "fastapi",
+    "sqlalchemy", "boto3", "pytest", "click", "pydantic", "celery",
+    "redis", "cryptography", "paramiko", "urllib3", "certifi", "six",
+    "packaging", "setuptools", "wheel", "pip", "virtualenv", "black",
+    "flake8", "mypy", "pylint", "isort", "aiohttp", "httpx", "uvicorn",
+    "gunicorn", "starlette", "jinja2", "markupsafe", "werkzeug",
+    "pyyaml", "toml", "attrs", "psycopg2", "pymongo", "asyncpg",
+    "stripe", "twilio", "openai", "anthropic", "langchain", "transformers",
+    "huggingface-hub", "charset-normalizer", "idna", "itsdangerous",
+    "colorama", "tqdm", "rich", "typer", "loguru", "httpcore",
+    "anyio", "sniffio", "h11", "h2", "hyperframe", "hpack",
+    "google-auth", "google-cloud-storage", "grpcio", "protobuf",
+    "pyarrow", "polars", "dask", "numba", "cython", "cffi",
+    "lxml", "beautifulsoup4", "selenium", "playwright", "scrapy",
+    "alembic", "sqlmodel", "tortoise-orm", "pymysql", "motor",
+}
+
+_POPULAR_NPM: set = {
+    "react", "react-dom", "lodash", "express", "axios", "moment",
+    "webpack", "babel-core", "typescript", "eslint", "jest", "mocha",
+    "chalk", "commander", "yargs", "inquirer", "dotenv",
+    "mongoose", "sequelize", "knex", "typeorm", "socket.io", "ws",
+    "cors", "body-parser", "morgan", "passport", "jsonwebtoken",
+    "bcrypt", "bcryptjs", "nodemailer", "multer", "sharp",
+    "redux", "mobx", "rxjs", "ramda", "next", "nuxt", "gatsby",
+    "vue", "angular", "tailwindcss", "bootstrap", "styled-components",
+    "aws-sdk", "firebase", "stripe", "twilio", "prettier",
+    "husky", "nodemon", "pm2", "uuid", "nanoid", "slugify",
+    "dayjs", "date-fns", "luxon", "cheerio", "puppeteer", "playwright",
+    "semver", "glob", "minimatch", "cross-env", "rimraf", "mkdirp",
+    "fs-extra", "debug", "winston", "pino", "got", "node-fetch",
+    "superagent", "compression", "helmet", "events", "readable-stream",
+    "through2", "bluebird", "async", "underscore", "immutable",
+    "classnames", "prop-types", "react-router", "react-redux",
+    "webpack-cli", "babel-loader", "css-loader", "style-loader",
+    "postcss", "autoprefixer", "sass", "less",
+}
+
+def _levenshtein(s1: str, s2: str) -> int:
+    """Compute Levenshtein edit distance between two strings."""
+    if s1 == s2:
+        return 0
+    if len(s1) < len(s2):
+        s1, s2 = s2, s1
+    if not s2:
+        return len(s1)
+    prev = list(range(len(s2) + 1))
+    for i, c1 in enumerate(s1):
+        curr = [i + 1]
+        for j, c2 in enumerate(s2):
+            curr.append(min(prev[j + 1] + 1, curr[j] + 1, prev[j] + (c1 != c2)))
+        prev = curr
+    return prev[-1]
+
 # ─── Check 1 — Suspicious New Maintainer Account ─────────────────────────────
 def _check_account_age(row, context):
     """
@@ -2707,6 +2764,65 @@ def _check_maintainer_count(row, context):
             "details":  f"{count_str}{plus} people with access on {owner}/{repo_name}{src_note}"}
 
 
+# ─── Check 7 — Typosquatting Detection ───────────────────────────────────────
+def _check_typosquatting(row, context):
+    """
+    Flags packages whose name is suspiciously close (edit distance ≤ 2) to a
+    known popular package — classic typosquatting supply-chain vector.
+    """
+    library  = str(row.get("Library", "") or "").strip().lower()
+    registry = str(row.get("Registry", "") or "").strip()
+
+    if not library or len(library) < 4:
+        return {"severity": "pass",
+                "label":    "Name OK",
+                "details":  "Package name too short to run typosquat check"}
+
+    if registry == "PyPI":
+        popular = _POPULAR_PYPI
+    elif registry in ("NPM", "npm"):
+        popular = _POPULAR_NPM
+    else:
+        return {"severity": "pass",
+                "label":    "N/A",
+                "details":  f"Typosquat check not available for {registry}"}
+
+    # Exact match = it IS the popular package — pass immediately
+    if library in popular:
+        return {"severity": "pass",
+                "label":    "Known popular package",
+                "details":  f"'{library}' is in the trusted popular package list"}
+
+    # Find the closest popular package by edit distance
+    closest, min_dist = None, 999
+    for pkg in popular:
+        if abs(len(library) - len(pkg)) > 3:
+            continue
+        d = _levenshtein(library, pkg)
+        if d < min_dist:
+            min_dist, closest = d, pkg
+
+    if min_dist == 1:
+        return {"severity": "critical",
+                "label":    f"Typosquat? (1 char from '{closest}')",
+                "details":  (f"'{library}' is 1 edit away from popular package '{closest}'"
+                             f" — very likely typosquatting attack")}
+    if min_dist == 2:
+        return {"severity": "high",
+                "label":    f"Suspicious (2 edits from '{closest}')",
+                "details":  (f"'{library}' is 2 edits away from '{closest}'"
+                             f" — review carefully before use")}
+    if min_dist == 3 and len(library) <= 7:
+        return {"severity": "medium",
+                "label":    f"Similar name to '{closest}'",
+                "details":  (f"'{library}' has some similarity to '{closest}'"
+                             f" — low confidence, informational only")}
+
+    return {"severity": "pass",
+            "label":    "No typosquat match",
+            "details":  f"'{library}' does not closely match any known popular package"}
+
+
 # ── Security Checks — JSON node ───────────────────────────────────────────────
 # Each check is a self-contained, JSON-serialisable record (no Python function
 # refs here). To add a new check:
@@ -2824,6 +2940,27 @@ _SECURITY_CHECKS_JSON = [
         "enabled":     True,
         "severity_thresholds": {},
     },
+    {
+        "id":          "C7",
+        "json_id":     "TYPOSQUATTING",
+        "category":    "identity",
+        "name":        "Typosquatting Detection",
+        "description": "Checks if the package name is a near-duplicate (edit distance ≤ 2) "
+                       "of a known popular package — a classic supply-chain attack vector "
+                       "where attackers register slightly misspelled package names to "
+                       "intercept accidental installs.",
+        "enabled":     True,
+        "severity_thresholds": {
+            "critical": {"edit_distance": 1, "label": "Typosquat? (1 char from '{match}')",
+                         "details": "1 edit away from popular package — very likely typosquatting"},
+            "high":     {"edit_distance": 2, "label": "Suspicious (2 edits from '{match}')",
+                         "details": "2 edits away from popular package — review carefully"},
+            "medium":   {"edit_distance": 3, "label": "Similar name to '{match}'",
+                         "details": "Some name similarity — low confidence, informational"},
+            "pass":     {"label": "No typosquat match",
+                         "details": "Name does not closely match any known popular package"},
+        },
+    },
 ]
 
 # ── Check function map — one line per check ────────────────────────────────────
@@ -2836,6 +2973,7 @@ _CHECK_FN_MAP: dict = {
     "C4": _check_bus_factor,
     "C5": _check_country,
     "C6": _check_maintainer_count,
+    "C7": _check_typosquatting,
 }
 
 # ── Rebuild _SECURITY_CHECKS for backward-compat with all existing references ──
@@ -2914,15 +3052,13 @@ def _extract_evidence(check_id: str, result: dict, row: dict) -> dict:
         tier     = tier_raw.split(" ", 1)[-1].split("(")[0].strip() if tier_raw else "Unknown"
         return {"country": country, "tier": tier}
 
-    if check_id == "C6":
-        label = result.get("label", "")
-        m = re.search(r'(\d+)(\+?)', label)
-        if m:
-            count = int(m.group(1))
-            plus  = bool(m.group(2))
-            return {"maintainer_count": f"{count}+" if plus else count,
-                    "source": "collaborators" if "collaborators" in result.get("details", "") else "contributors"}
-        return {"maintainer_count": None, "source": None}
+    if check_id == "C7":
+        library = str(row.get("Library", "") or "").strip().lower()
+        m = re.search(r"from '([^']+)'", result.get("details", ""))
+        closest = m.group(1) if m else None
+        dist_m  = re.search(r"(\d+) edit", result.get("details", ""))
+        dist    = int(dist_m.group(1)) if dist_m else None
+        return {"package_name": library, "closest_match": closest, "edit_distance": dist}
 
     return {}
 
@@ -7750,9 +7886,6 @@ if "scan_data" in st.session_state:
                 _country_val = _r.get("Country", "Unknown") or "Unknown"
                 _tier_val    = _r.get("Country Tier", "") or ""
                 _tier_clean  = re.sub(r'^[^\x00-\x7F\s]+\s*', '', str(_tier_val)).strip()
-                _maint_str   = str(_r.get("Maintainer", "") or "")
-                _maint_plus  = re.search(r'\+\s*(\d+)', _maint_str)
-                _maint_count = (1 + int(_maint_plus.group(1))) if _maint_plus else (1 if _maint_str.strip() and _maint_str not in ("—", "") else 0)
                 _rec = {
                     "package_info": {
                         "library":   str(_r.get("Library",   "") or ""),
@@ -7765,9 +7898,8 @@ if "scan_data" in st.session_state:
                         "status":    _strip_emoji_fn(_r.get("Status", "")),
                     },
                     "maintainer": {
-                        "name":             str(_r.get("Maintainer",       "") or ""),
-                        "maintainer_count": _maint_count,
-                        "single_flag":      _strip_emoji_fn(_r.get("Single Maintainer", "")),
+                        "name":           str(_r.get("Maintainer",       "") or ""),
+                        "single_flag":    _strip_emoji_fn(_r.get("Single Maintainer", "")),
                     },
                     "country_intelligence": {
                         "country":    str(_country_val),
