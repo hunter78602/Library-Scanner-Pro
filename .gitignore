@@ -8,5 +8,6 @@
 !.github/
 !.github/**
 !diff_scanner.py
+!scan_cli.py
 !rules/
 !rules/*.yaml
