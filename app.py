@@ -2658,14 +2658,14 @@ def _check_bus_factor(row, context):
         if downloads >= 10_000_000:
             return {"severity": "critical",
                     "label":    "Bus Factor: ≤5 maint + 10M+ dl",
-                    "details":  f"≤5 maintainers for a package with {row.get('Downloads','')} downloads — left-pad/event-stream risk"}
+                    "details":  f"<=5 maintainers for a package with {row.get('Downloads','')} downloads — left-pad/event-stream risk"}
         return {"severity": "high",
-                "label":    "Bus Factor (≤5 maintainers)",
-                "details":  f"≤5 maintainers + {row.get('Downloads','')} downloads"}
+                "label":    "Bus Factor (<=5 maintainers)",
+                "details":  f"<=5 maintainers + {row.get('Downloads','')} downloads"}
     if "Solo" in sm:
         return {"severity": "medium",
                 "label":    "Small team (moderate dl)",
-                "details":  f"≤5 maintainers with {row.get('Downloads','')} downloads"}
+                "details":  f"<=5 maintainers with {row.get('Downloads','')} downloads"}
     return {"severity": "pass",
             "label":    "Healthy maintainer count",
             "details":  "More than 5 maintainers with publish rights"}
@@ -3182,7 +3182,7 @@ def _build_raised_queries(audit_rows: list) -> list:
         registry = row.get("Registry", "")
         sources  = ["GitHub", "OSV"]
         if "PyPI"    in registry: sources.append("PyPI")
-        if "npm"     in registry: sources.append("NPM")
+        if "npm"     in registry.lower(): sources.append("NPM")
         if "Maven"   in registry: sources.append("Maven")
         if "NuGet"   in registry: sources.append("NuGet")
         if "Crates"  in registry: sources.append("Crates.io")
@@ -3274,7 +3274,7 @@ def _build_supply_chain_json(audit_rows: list) -> list:
         registry = row.get("Registry", "")
         sources  = ["GitHub", "OSV"]
         if "PyPI"    in registry: sources.append("PyPI")
-        if "npm"     in registry: sources.append("NPM")
+        if "npm"     in registry.lower(): sources.append("NPM")
         if "Maven"   in registry: sources.append("Maven")
         if "NuGet"   in registry: sources.append("NuGet")
         if "Crates"  in registry: sources.append("Crates.io")
