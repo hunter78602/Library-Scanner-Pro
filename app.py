@@ -3002,7 +3002,7 @@ def _run_security_checks(row, token=""):
 # ── Per-check lookup map and weights ──────────────────────────────────────────
 _CHECK_META   = {chk["id"]: chk for chk in _SECURITY_CHECKS_JSON}
 # Max risk contribution per check (mirrors _risk_score() dimension weights)
-_CHECK_WEIGHT = {"C1": 10, "C2": 30, "C3": 25, "C4": 15, "C5": 20}
+_CHECK_WEIGHT = {"C1": 10, "C2": 30, "C3": 25, "C4": 15, "C5": 20, "C6": 5, "C7": 20}
 # Severity → human status label
 _SEV_TO_STATUS = {
     "pass": "pass", "low": "pass",
