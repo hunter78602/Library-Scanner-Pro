@@ -1,0 +1,138 @@
+# PyPI zero-day detection rules
+# Each rule is evaluated against added lines (+lines) in version diffs.
+#
+# Fields:
+#   id              — unique rule identifier
+#   weight          — base score contribution (40+ = alert threshold alone)
+#   location_scaled — if true, weight is multiplied by file location weight
+#                     (setup.py/pth = 3x, pyproject.toml = 2x, tests = 0.2x)
+#   file_pattern    — regex; rule only fires on matching filenames
+#   description     — what the rule detects
+#   match:
+#     any: [patterns] — at least one pattern matches at least one added line
+#     all: [patterns] — ALL patterns must appear somewhere in added lines
+#     regex: "..."    — shorthand for single pattern across all added lines
+
+# ── .pth file rules ────────────────────────────────────────────────────────────
+# .pth files in site-packages are processed by Python on EVERY interpreter start.
+# Any line beginning with "import" is exec()'d automatically — no user action needed.
+# Miasma/Hades 2026 used this exact vector.
+
+- id: pth-file-present
+  weight: 45
+  location_scaled: false
+  file_pattern: "\\.pth$"
+  description: ".pth file added to package — auto-executes on every Python startup"
+  match:
+    regex: "\\S+"   # any non-whitespace content in a .pth file is suspicious
+
+- id: pth-import-exec
+  weight: 50
+  location_scaled: false
+  file_pattern: "\\.pth$"
+  description: "import/exec line in .pth = arbitrary code on every python invocation"
+  match:
+    any:
+      - regex: "^import\\s+"
+      - regex: "^exec\\s*\\("
+      - regex: "^__import__"
+
+# ── Install-time execution (setup.py / install scripts) ───────────────────────
+# Code that runs at `pip install` time — before the user ever imports the package.
+
+- id: install-exec-call
+  weight: 40
+  location_scaled: true
+  description: "eval/exec/subprocess in install script — install-time RCE"
+  match:
+    any:
+      - regex: "\\beval\\s*\\("
+      - regex: "\\bexec\\s*\\("
+      - regex: "subprocess\\.(run|call|Popen|check_output|check_call)"
+      - regex: "os\\.system\\s*\\("
+      - regex: "os\\.popen\\s*\\("
+      - regex: "__import__\\s*\\("
+
+- id: install-network-call
+  weight: 35
+  location_scaled: true
+  description: "network call in install script — downloading payload at install time"
+  match:
+    any:
+      - regex: "requests\\.(get|post|put|head)"
+      - regex: "urllib\\.request\\.urlopen"
+      - regex: "urllib2\\."
+      - regex: "http\\.client\\.(HTTPConnection|HTTPSConnection)"
+      - regex: "socket\\.connect\\s*\\("
+
+# ── Credential exfiltration combos ────────────────────────────────────────────
+# Credential access + outbound network = classic exfil pattern.
+# Both patterns must appear together in the same added-line set.
+
+- id: cred-network-combo
+  weight: 45
+  location_scaled: false
+  description: "env/credential access + network call — credential exfiltration pattern"
+  match:
+    all:
+      - regex: "os\\.environ|os\\.getenv|expanduser|HOME|SSH_AUTH|AWS_|GITHUB_TOKEN|NPM_TOKEN"
+      - regex: "requests\\.|urllib\\.|socket\\.|http\\."
+
+- id: ssh-key-read
+  weight: 40
+  location_scaled: false
+  description: "reading SSH keys or credentials from home directory"
+  match:
+    all:
+      - regex: "id_rsa|id_ed25519|id_ecdsa|\\.ssh/|known_hosts|\\.pypirc|\\.npmrc"
+      - regex: "open\\s*\\(|read\\s*\\(|readlines"
+
+# ── Obfuscation patterns ───────────────────────────────────────────────────────
+
+- id: base64-exec
+  weight: 45
+  location_scaled: false
+  description: "base64 decode + exec — standard obfuscated payload loader"
+  match:
+    all:
+      - regex: "base64\\.(b64decode|decodebytes|decodestring)"
+      - regex: "\\beval\\s*\\(|\\bexec\\s*\\(|compile\\s*\\("
+
+- id: zlib-exec
+  weight: 40
+  location_scaled: false
+  description: "zlib/gzip decompress + exec — compressed payload"
+  match:
+    all:
+      - regex: "zlib\\.decompress|gzip\\.decompress|bz2\\.decompress"
+      - regex: "\\beval\\s*\\(|\\bexec\\s*\\("
+
+- id: chr-concat-exec
+  weight: 40
+  location_scaled: false
+  description: "chr() concatenation used to build and exec a string — char-code obfuscation"
+  match:
+    all:
+      - regex: "chr\\s*\\(\\s*\\d+|\\\\x[0-9a-fA-F]{2}"
+      - regex: "\\beval\\s*\\(|\\bexec\\s*\\("
+
+# ── External binary dropper ────────────────────────────────────────────────────
+# Downloads an external binary and executes it — Miasma used this to drop Bun runtime.
+
+- id: binary-dropper
+  weight: 45
+  location_scaled: false
+  description: "downloading external binary and executing it — dropper pattern"
+  match:
+    all:
+      - regex: "requests\\.|urllib\\.|wget|curl"
+      - regex: "chmod.*\\+x|os\\.chmod.*0o7|subprocess.*\\.sh|bash\\s+-c|sh\\s+-c|os\\.execv"
+
+- id: tempfile-exec
+  weight: 35
+  location_scaled: false
+  description: "writing to temp file then executing — dropper stage 2"
+  match:
+    all:
+      - regex: "tempfile\\.|/tmp/|\\.write\\s*\\(|NamedTemporaryFile"
+      - regex: "subprocess\\.|os\\.system|os\\.execv|os\\.popen|chmod"

@@ -7,3 +7,6 @@
 !packages.yaml
 !.github/
 !.github/**
+!diff_scanner.py
+!rules/
+!rules/*.yaml

@@ -599,11 +599,12 @@ _migrate_cache()
 
 _MONITOR_FIELD_SEVERITY = {
     "cves":                    "critical",
-    "maintainer_email_domain": "critical",   # P1: domain change = account hijack signal
+    "maintainer_email_domain": "high",
     "maintainer":              "high",
     "last_updated":            "high",
     "license":                 "medium",
-    # version removed — routine bumps generate noise, not security signal
+    "deprecated":              "medium",
+    "version":                 "info",
 }
 
 
@@ -743,6 +744,10 @@ def _is_noise(field: str, old_val: str, new_val: str) -> bool:
         new_norm = re.sub(r'[^a-z0-9]', '', new_val.lower())
         if old_norm and old_norm in new_norm:
             return True
+    if field == "deprecated":
+        # Only alert active → deprecated, not the reverse
+        if new_val.lower() != "deprecated":
+            return True
     return False
 
 
@@ -793,6 +798,7 @@ def _pipeline_ingest(audit_rows: list):
         if not library or not registry:
             continue
         row_data = ar.get("_row_data") or ar
+        _status_raw = str(row_data.get("Status", "") or "").lower()
         snapshot = {
             "version":                 row_data.get("Version",                    "N/A"),
             "maintainer":              row_data.get("Maintainer",                 "—"),
@@ -802,6 +808,7 @@ def _pipeline_ingest(audit_rows: list):
             "downloads":               row_data.get("Downloads",                  "—"),
             "maintainer_email_domain": row_data.get("_maintainer_email_domain",   "") or "",
             "source":                  row_data.get("Repo",                       ""),
+            "deprecated":              "deprecated" if "abandoned" in _status_raw else "active",
         }
         _monitor_upsert(library, registry)
         old_snap = _snapshot_get_latest(library, registry)
@@ -2631,6 +2638,75 @@ def _check_country(row, context):
             "label":    f"Trusted ({country})",
             "details":  f"Maintainer in trusted country {country}"}
 
+# ─── Check 6 — GitHub Maintainer Count ───────────────────────────────────────
+def _check_maintainer_count(row, context):
+    """
+    Fetches the exact count of people with write access to the GitHub repo.
+    Primary: /collaborators (requires token). Fallback: /contributors (public).
+    """
+    token = (context or {}).get("token", "")
+    repo  = str(row.get("Repo", "") or "")
+
+    m = re.match(r"https?://github\.com/([^/]+)/([^/\s?#]+?)(?:\.git)?/?$", repo)
+    if not m:
+        return {"severity": "info",
+                "label":    "N/A",
+                "details":  "Not a GitHub repository — maintainer count unavailable"}
+
+    owner, repo_name = m.group(1), m.group(2)
+    cache = st.session_state.setdefault("_maint_count_cache", {})
+    cache_key = f"{owner}/{repo_name}"
+
+    if cache_key in cache:
+        count, source = cache[cache_key]
+    else:
+        headers = {"User-Agent": "RegistryIntelligencePlatform/1.0",
+                   "Accept":     "application/vnd.github+json"}
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+        count, source = None, "unknown"
+        try:
+            r = requests.get(
+                f"https://api.github.com/repos/{owner}/{repo_name}/collaborators"
+                "?affiliation=all&per_page=100",
+                headers=headers, timeout=8
+            )
+            if r.status_code == 200:
+                count  = len(r.json())
+                source = "collaborators"
+                if 'rel="next"' in r.headers.get("Link", ""):
+                    count = f"{count}+"
+            elif r.status_code in (403, 404):
+                r2 = requests.get(
+                    f"https://api.github.com/repos/{owner}/{repo_name}/contributors"
+                    "?per_page=100&anon=false",
+                    headers=headers, timeout=8
+                )
+                if r2.status_code == 200:
+                    count  = len(r2.json())
+                    source = "contributors"
+                    if 'rel="next"' in r2.headers.get("Link", ""):
+                        count = f"{count}+"
+        except Exception:
+            pass
+        cache[cache_key] = (count, source)
+
+    if count is None:
+        return {"severity": "info",
+                "label":    "Lookup failed",
+                "details":  f"Could not fetch maintainer count for {owner}/{repo_name}"}
+
+    count_str = str(count)
+    count_int = int(count_str.rstrip("+")) if count_str.rstrip("+").isdigit() else 0
+    plus      = "+" if count_str.endswith("+") else ""
+    label     = f"{count_str} maintainer{'s' if count_int != 1 else ''}"
+    src_note  = f" (via {source})"
+
+    return {"severity": "info",
+            "label":    label,
+            "details":  f"{count_str}{plus} people with access on {owner}/{repo_name}{src_note}"}
+
+
 # ── Security Checks — JSON node ───────────────────────────────────────────────
 # Each check is a self-contained, JSON-serialisable record (no Python function
 # refs here). To add a new check:
@@ -2737,6 +2813,17 @@ _SECURITY_CHECKS_JSON = [
                          "details": "Maintainer in trusted country {country}"},
         },
     },
+    {
+        "id":          "C6",
+        "json_id":     "MAINTAINER_COUNT",
+        "category":    "ownership",
+        "name":        "GitHub Maintainer Count",
+        "description": "Fetches the exact number of people with write access to the "
+                       "GitHub repository (collaborators API, falls back to contributors "
+                       "when token permissions are insufficient).",
+        "enabled":     True,
+        "severity_thresholds": {},
+    },
 ]
 
 # ── Check function map — one line per check ────────────────────────────────────
@@ -2748,6 +2835,7 @@ _CHECK_FN_MAP: dict = {
     "C3": _check_cve,
     "C4": _check_bus_factor,
     "C5": _check_country,
+    "C6": _check_maintainer_count,
 }
 
 # ── Rebuild _SECURITY_CHECKS for backward-compat with all existing references ──
@@ -2825,6 +2913,16 @@ def _extract_evidence(check_id: str, result: dict, row: dict) -> dict:
         tier_raw = row.get("Country Tier", "") or _country_tier(country)
         tier     = tier_raw.split(" ", 1)[-1].split("(")[0].strip() if tier_raw else "Unknown"
         return {"country": country, "tier": tier}
+
+    if check_id == "C6":
+        label = result.get("label", "")
+        m = re.search(r'(\d+)(\+?)', label)
+        if m:
+            count = int(m.group(1))
+            plus  = bool(m.group(2))
+            return {"maintainer_count": f"{count}+" if plus else count,
+                    "source": "collaborators" if "collaborators" in result.get("details", "") else "contributors"}
+        return {"maintainer_count": None, "source": None}
 
     return {}
 
@@ -7613,6 +7711,14 @@ if "scan_data" in st.session_state:
                 for _cc in ("Country", "Country Tier"):
                     if _cc in _export_base.columns:
                         _export_base[_cc] = _export_base[_cc].fillna("Unknown")
+                # Derive Country Tier from Country (_enrich_countries only adds Country)
+                if "Country" in _export_base.columns:
+                    _export_base["Country Tier"] = _export_base["Country"].apply(_country_tier)
+                # Recompute Risk Score now that Country Tier is available
+                _export_base["Risk Score"] = _export_base.apply(
+                    lambda r: _risk_score(r, _active_rules), axis=1
+                )
+                _export_base["Risk"] = _export_base["Risk Score"].apply(_risk_band)
 
             # ── CSV export: fixed logical column order ──────────────────────
             _csv_col_order = [
@@ -7644,6 +7750,9 @@ if "scan_data" in st.session_state:
                 _country_val = _r.get("Country", "Unknown") or "Unknown"
                 _tier_val    = _r.get("Country Tier", "") or ""
                 _tier_clean  = re.sub(r'^[^\x00-\x7F\s]+\s*', '', str(_tier_val)).strip()
+                _maint_str   = str(_r.get("Maintainer", "") or "")
+                _maint_plus  = re.search(r'\+\s*(\d+)', _maint_str)
+                _maint_count = (1 + int(_maint_plus.group(1))) if _maint_plus else (1 if _maint_str.strip() and _maint_str not in ("—", "") else 0)
                 _rec = {
                     "package_info": {
                         "library":   str(_r.get("Library",   "") or ""),
@@ -7656,8 +7765,9 @@ if "scan_data" in st.session_state:
                         "status":    _strip_emoji_fn(_r.get("Status", "")),
                     },
                     "maintainer": {
-                        "name":           str(_r.get("Maintainer",       "") or ""),
-                        "single_flag":    _strip_emoji_fn(_r.get("Single Maintainer", "")),
+                        "name":             str(_r.get("Maintainer",       "") or ""),
+                        "maintainer_count": _maint_count,
+                        "single_flag":      _strip_emoji_fn(_r.get("Single Maintainer", "")),
                     },
                     "country_intelligence": {
                         "country":    str(_country_val),
@@ -7745,6 +7855,8 @@ if "scan_data" in st.session_state:
                 # Apply Country Tier classification to every row
                 _gdf = _geo_df.copy()
                 _gdf["Country Tier"] = _gdf["Country"].apply(_country_tier)
+                if "Status" not in _gdf.columns:
+                    _gdf["Status"] = _gdf["Last Updated"].apply(_pkg_status)
 
                 # ═══════════════════════════════════════════════════════════════
                 # NEW SECTION — Per-Library Security Audit
@@ -9687,14 +9799,65 @@ with _dash_col4:
             _a.get("new_value","") or "—",
             str(_a.get("detected_at",""))[:16],
         ])
-    st.download_button(
-        label="📊 Export Report",
-        data=_rpt_buf.getvalue().encode("utf-8"),
-        file_name=f"library_scanner_report_{datetime.datetime.utcnow().strftime('%Y%m%d')}.csv",
-        mime="text/csv",
-        use_container_width=True,
-        key="_export_report",
-    )
+    _rpt_date = datetime.datetime.utcnow().strftime('%Y%m%d')
+    _col_csv, _col_json = st.columns(2)
+    with _col_csv:
+        st.download_button(
+            label="📊 Export CSV",
+            data=_rpt_buf.getvalue().encode("utf-8"),
+            file_name=f"library_scanner_report_{_rpt_date}.csv",
+            mime="text/csv",
+            use_container_width=True,
+            key="_export_report_csv",
+        )
+    with _col_json:
+        import json as _json_mod
+        _rpt_json_payload = {
+            "generated": _rpt_now,
+            "summary": {
+                "total_packages":        len(_rpt_pkgs),
+                "packages_checked_24h":  _rpt_checked_24h,
+                "coverage_pct":          round(_rpt_checked_24h / max(len(_rpt_pkgs), 1) * 100),
+                "total_alerts":          len(_rpt_alerts),
+                "critical_alerts":       sum(1 for a in _rpt_alerts if a.get("severity") == "critical"),
+                "high_alerts":           sum(1 for a in _rpt_alerts if a.get("severity") == "high"),
+                "medium_alerts":         sum(1 for a in _rpt_alerts if a.get("severity") == "medium"),
+            },
+            "packages": [
+                {
+                    "library":      _p.get("library", ""),
+                    "registry":     _p.get("registry", ""),
+                    "enrolled_at":  str(_p.get("enrolled_at", ""))[:10],
+                    "last_checked": str(_p.get("last_checked", "") or "—")[:16],
+                    "next_check_at":str(_p.get("next_check_at", "") or "—")[:16],
+                    "version":      (_p.get("snapshot") or {}).get("version", "—"),
+                    "maintainer":   (_p.get("snapshot") or {}).get("maintainer", "—"),
+                    "cves":         (_p.get("snapshot") or {}).get("cves", "—"),
+                    "license":      (_p.get("snapshot") or {}).get("license", "—"),
+                }
+                for _p in _rpt_pkgs
+            ],
+            "alerts": [
+                {
+                    "library":     _a.get("library", ""),
+                    "registry":    _a.get("registry", ""),
+                    "severity":    _a.get("severity", "").upper(),
+                    "field":       _FIELD_LABEL_RPT.get(_a.get("field", ""), _a.get("field", "")),
+                    "before":      _a.get("old_value", "") or "—",
+                    "after":       _a.get("new_value", "") or "—",
+                    "detected_at": str(_a.get("detected_at", ""))[:16],
+                }
+                for _a in _rpt_alerts
+            ],
+        }
+        st.download_button(
+            label="🗂️ Export JSON",
+            data=_json_mod.dumps(_rpt_json_payload, indent=2, ensure_ascii=False).encode("utf-8"),
+            file_name=f"library_scanner_report_{_rpt_date}.json",
+            mime="application/json",
+            use_container_width=True,
+            key="_export_report_json",
+        )
 
 if _auto_refresh:
     import time as _time

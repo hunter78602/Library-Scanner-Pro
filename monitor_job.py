@@ -35,6 +35,13 @@ from contextlib import contextmanager
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 
+# ── Zero-day diff scanner ──────────────────────────────────────────────────────
+try:
+    import diff_scanner
+    _DIFF_SCANNER_OK = True
+except ImportError:
+    _DIFF_SCANNER_OK = False
+
 # ── Load .env if present ───────────────────────────────────────────────────────
 try:
     from dotenv import load_dotenv
@@ -89,11 +96,13 @@ def _pg_conn():
 
 # ── Field → severity mapping ───────────────────────────────────────────────────
 MONITOR_FIELD_SEVERITY = {
-    "cves":         "critical",
-    "maintainer":   "high",
-    "last_updated": "high",
-    "license":      "medium",
-    "version":      "info",
+    "cves":                    "critical",
+    "maintainer":              "high",
+    "maintainer_email_domain": "high",
+    "last_updated":            "high",
+    "license":                 "medium",
+    "deprecated":              "medium",
+    "version":                 "info",
 }
 
 _DOMAIN_ALIASES = [
@@ -192,6 +201,12 @@ def _norm_maintainer(v: str) -> str:
     import re as _re
     return _re.sub(r'\s*\+\d+\s*$', '', v).strip().lower()
 
+def _extract_domain(email: str) -> str:
+    """Return the lowercase domain from an email address, or '' if none."""
+    if not email or "@" not in email:
+        return ""
+    return email.strip().lower().split("@")[-1].split(">")[0].strip()
+
 def _is_unknown(v: str) -> bool:
     return v.strip().lower() in _UNKNOWN_VALUES
 
@@ -270,6 +285,10 @@ def write_alerts(library, registry, old_snap, new_snap):
                     _skip = True
                     break
             if _skip:
+                continue
+        elif field == "deprecated":
+            # Only alert when package goes active → deprecated, not the reverse
+            if new_val.lower() != "deprecated":
                 continue
         elif field == "last_updated":
             # Only alert when the date moves FORWARD by >30 days.
@@ -396,6 +415,7 @@ def fetch_npm(pkg):
             maint_str = f"User · {maints[0].get('name','—')} +{len(maints)-1}"
         else:
             maint_str = f"User · {maints[0].get('name','—')}" if maints else "—"
+        maint_email_domain = _extract_domain(maints[0].get("email", "")) if maints else ""
         dl = 0
         try:
             dr = requests.get(
@@ -408,13 +428,16 @@ def fetch_npm(pkg):
         lic = info.get("license", "—")
         if isinstance(lic, dict):
             lic = lic.get("type", "—")
+        deprecated = "deprecated" if info.get("deprecated") else "active"
         return {
-            "version":      latest or "N/A",
-            "maintainer":   maint_str,
-            "cves":         _fetch_cves("npm", pkg, latest),
-            "license":      lic or "—",
-            "last_updated": (d.get("time", {}).get(latest, "")[:10] if latest else "—"),
-            "downloads":    f"{dl:,}" if dl else "—",
+            "version":                 latest or "N/A",
+            "maintainer":              maint_str,
+            "maintainer_email_domain": maint_email_domain or "—",
+            "cves":                    _fetch_cves("npm", pkg, latest),
+            "license":                 lic or "—",
+            "last_updated":            (d.get("time", {}).get(latest, "")[:10] if latest else "—"),
+            "deprecated":              deprecated,
+            "downloads":               f"{dl:,}" if dl else "—",
         }
     except Exception:
         return None
@@ -432,6 +455,12 @@ def fetch_pypi(pkg):
         maint = (info.get("maintainer") or info.get("author") or "").strip()
         if not maint or maint.lower() in ("none", "null", ""):
             maint = "—"
+        raw_email = (info.get("maintainer_email") or info.get("author_email") or "").strip()
+        # PyPI sometimes returns "Name <email>" format — extract just the address
+        import re as _re2
+        _em_match = _re2.search(r'<([^>]+)>', raw_email)
+        raw_email = _em_match.group(1) if _em_match else raw_email
+        maint_email_domain = _extract_domain(raw_email)
         # Last updated: from latest release upload_time
         last_updated = "—"
         release_files = d.get("releases", {}).get(version, [])
@@ -447,13 +476,16 @@ def fetch_pypi(pkg):
                     if len(parts) >= 3:
                         lic = parts[-1].strip()
                         break
+        deprecated = "deprecated" if info.get("yanked") else "active"
         return {
-            "version":      version,
-            "maintainer":   f"User · {maint}" if maint != "—" else "—",
-            "cves":         _fetch_cves("PyPI", pkg, version),
-            "license":      lic or "—",
-            "last_updated": last_updated,
-            "downloads":    "—",
+            "version":                 version,
+            "maintainer":              f"User · {maint}" if maint != "—" else "—",
+            "maintainer_email_domain": maint_email_domain or "—",
+            "cves":                    _fetch_cves("PyPI", pkg, version),
+            "license":                 lic or "—",
+            "last_updated":            last_updated,
+            "deprecated":              deprecated,
+            "downloads":               "—",
         }
     except Exception:
         return None
@@ -467,6 +499,7 @@ def fetch_rubygems(pkg):
         d       = r.json()
         version = d.get("version", "N/A")
         maint   = "—"
+        maint_email_domain = ""
         try:
             ro = requests.get(
                 f"https://rubygems.org/api/v1/gems/{pkg}/owners.json", timeout=6
@@ -479,16 +512,19 @@ def fetch_rubygems(pkg):
                     maint = f"User · {names[0]} +{len(names)-1}"
                 elif names:
                     maint = f"User · {names[0]}"
+                maint_email_domain = _extract_domain(owners[0].get("email", "")) if owners else ""
         except Exception:
             pass
         lic = (d.get("licenses") or ["—"])[0] or "—"
         return {
-            "version":      version,
-            "maintainer":   maint,
-            "cves":         _fetch_cves("RubyGems", pkg, version),
-            "license":      lic,
-            "last_updated": (d.get("version_created_at", "") or "")[:10] or "—",
-            "downloads":    f"{d.get('downloads', 0):,}",
+            "version":                 version,
+            "maintainer":              maint,
+            "maintainer_email_domain": maint_email_domain or "—",
+            "cves":                    _fetch_cves("RubyGems", pkg, version),
+            "license":                 lic,
+            "last_updated":            (d.get("version_created_at", "") or "")[:10] or "—",
+            "deprecated":              "active",
+            "downloads":               f"{d.get('downloads', 0):,}",
         }
     except Exception:
         return None
@@ -511,12 +547,14 @@ def fetch_nuget(pkg):
         if isinstance(authors, list):
             authors = ", ".join(str(a) for a in authors[:3])
         authors = authors.strip() or "—"
+        deprecated = "deprecated" if latest.get("deprecation") else "active"
         return {
             "version":      version,
             "maintainer":   f"Org · {authors}" if authors != "—" else "—",
             "cves":         _fetch_cves("NuGet", pkg, version),
             "license":      latest.get("licenseExpression", "—") or "—",
             "last_updated": (latest.get("published", "") or "")[:10] or "—",
+            "deprecated":   deprecated,
             "downloads":    "—",
         }
     except Exception:
@@ -587,6 +625,7 @@ def fetch_github(pkg):
                 "cves":         cve,
                 "license":      _lic,
                 "last_updated": last_updated,
+                "deprecated":   "deprecated" if repo.get("archived") else "active",
                 "downloads":    f"{repo.get('stargazers_count', 0):,} stars",
             }
 
@@ -618,6 +657,7 @@ def fetch_github(pkg):
             "cves":         "—",
             "license":      (repo.get("license") or {}).get("spdx_id", "—") or "—",
             "last_updated": (repo.get("pushed_at", "") or "")[:10],
+            "deprecated":   "deprecated" if repo.get("archived") else "active",
             "downloads":    f"{repo.get('stargazers_count', 0):,} stars",
         }
     except Exception:
@@ -659,12 +699,14 @@ def fetch_packagist(pkg):
         if isinstance(lic, list):
             lic = lic[0] if lic else "—"
         dl = data.get("downloads", {}).get("total", 0)
+        deprecated = "deprecated" if data.get("abandoned") else "active"
         return {
             "version":      latest.lstrip("v"),
             "maintainer":   maint,
             "cves":         "—",
             "license":      lic or "—",
             "last_updated": (ver_data.get("time", "") or "")[:10] or "—",
+            "deprecated":   deprecated,
             "downloads":    f"{dl:,}" if dl else "—",
         }
     except Exception:
@@ -693,6 +735,7 @@ def fetch_homebrew(pkg):
             "cves":         "—",
             "license":      data.get("license", "—") or "—",
             "last_updated": "—",
+            "deprecated":   "deprecated" if data.get("deprecated") else "active",
             "downloads":    "—",
         }
     except Exception:
@@ -720,6 +763,7 @@ def fetch_wordpress_plugins(pkg):
             "cves":         "—",
             "license":      data.get("license", "—") or "—",
             "last_updated": (data.get("last_updated", "") or "")[:10] or "—",
+            "deprecated":   "active",
             "downloads":    f"{dl:,}" if dl else "—",
         }
     except Exception:
@@ -756,12 +800,14 @@ def fetch_crates(pkg):
                     maint = f"User · {names[0]}"
         except Exception:
             pass
+        deprecated = "deprecated" if (versions and versions[0].get("yanked")) else "active"
         return {
             "version":      version,
             "maintainer":   maint,
             "cves":         _fetch_cves("crates.io", pkg, version),
             "license":      lic,
             "last_updated": (crate.get("updated_at", "") or "")[:10] or "—",
+            "deprecated":   deprecated,
             "downloads":    f"{crate.get('downloads', 0):,}",
         }
     except Exception:
@@ -819,6 +865,7 @@ def fetch_maven(pkg):
             "cves":         _fetch_cves("Maven", f"{g}:{a}", version),
             "license":      "—",
             "last_updated": last_updated,
+            "deprecated":   "active",
             "downloads":    "—",
         }
     except Exception:
@@ -862,6 +909,7 @@ def fetch_vscode(pkg):
             "cves":         "—",
             "license":      "—",
             "last_updated": (ver.get("lastUpdated", "") or "")[:10] or "—",
+            "deprecated":   "active",
             "downloads":    f"{inst:,}" if inst else "—",
         }
     except Exception:
@@ -891,6 +939,7 @@ def fetch_winget(pkg):
                     "cves":         "—",
                     "license":      latest.get("License", "—") or "—",
                     "last_updated": (d.get("UpdatedAt", "") or "")[:10] or "—",
+                    "deprecated":   "active",
                     "downloads":    "—",
                 }
         # Stage 2: search
@@ -917,6 +966,7 @@ def fetch_winget(pkg):
                         "cves":         "—",
                         "license":      latest.get("License", "—") or "—",
                         "last_updated": (p.get("UpdatedAt", "") or "")[:10] or "—",
+                        "deprecated":   "active",
                         "downloads":    "—",
                     }
         return None
@@ -954,6 +1004,7 @@ def fetch_go_modules(pkg):
             "cves":         "—",
             "license":      lic,
             "last_updated": lu,
+            "deprecated":   "active",
             "downloads":    "—",
         }
     except Exception:
@@ -984,6 +1035,7 @@ def fetch_docker_hub(pkg):
             "cves":         "—",
             "license":      "—",
             "last_updated": lu,
+            "deprecated":   "active",
             "downloads":    f"{d.get('pull_count', 0):,}",
         }
     except Exception:
@@ -1005,6 +1057,7 @@ def fetch_hugging_face(pkg):
                 "cves":         "—",
                 "license":      lic,
                 "last_updated": lm,
+                "deprecated":   "active",
                 "downloads":    f"{d.get('downloads', 0):,}",
             }
         r2 = requests.get(
@@ -1023,6 +1076,7 @@ def fetch_hugging_face(pkg):
                     "cves":         "—",
                     "license":      "—",
                     "last_updated": lm,
+                    "deprecated":   "active",
                     "downloads":    f"{d.get('downloads', 0):,}",
                 }
         return None
@@ -1052,6 +1106,7 @@ def fetch_terraform(pkg):
             "cves":         "—",
             "license":      "MPL-2.0",
             "last_updated": lu,
+            "deprecated":   "active",
             "downloads":    f"{mo.get('downloads', 0):,}",
         }
     except Exception:
@@ -1080,6 +1135,7 @@ def fetch_ansible_galaxy(pkg):
             "cves":         "—",
             "license":      "—",
             "last_updated": lu,
+            "deprecated":   "active",
             "downloads":    f"{d.get('download_count', 0):,}",
         }
     except Exception:
@@ -1107,6 +1163,7 @@ def fetch_chocolatey(pkg):
             "cves":         "—",
             "license":      "—",
             "last_updated": lu,
+            "deprecated":   "active",
             "downloads":    f"{e.get('DownloadCount', 0):,}",
         }
     except Exception:
@@ -1140,6 +1197,7 @@ def fetch_chrome_web_store(pkg):
             "cves":         "—",
             "license":      "—",
             "last_updated": "—",
+            "deprecated":   "active",
             "downloads":    f"{int(item[23] or 0):,}" if item[23] else "—",
         }
     except Exception:
@@ -1169,6 +1227,7 @@ def fetch_ecr_public(pkg):
             "cves":         "—",
             "license":      "—",
             "last_updated": "—",
+            "deprecated":   "active",
             "downloads":    f"{d.get('downloadCount', 0):,}",
         }
     except Exception:
@@ -1202,6 +1261,7 @@ def _fetch_repology(pkg, preferred_repos):
                 "cves":         "—",
                 "license":      lic,
                 "last_updated": "—",
+                "deprecated":   "active",
                 "downloads":    "—",
             }
         return None
@@ -1517,7 +1577,37 @@ def main():
             n, alert_list = write_alerts(library, registry, old_snap, new_snap)
             total_alerts     += n
             all_new_alerts   += alert_list
-            if n == 0:
+
+            # ── Zero-day diff scan on version change ───────────────────────────
+            _zd_hit = False
+            old_ver = str(old_snap.get("version", "") or "").strip()
+            new_ver = str(new_snap.get("version", "") or "").strip()
+            if (_DIFF_SCANNER_OK
+                    and old_ver and new_ver
+                    and old_ver not in ("—", "N/A")
+                    and new_ver not in ("—", "N/A")
+                    and old_ver != new_ver
+                    and registry in ("PyPI", "NPM")):
+                try:
+                    zd = diff_scanner.scan(library, registry, old_ver, new_ver)
+                    if zd and zd["hit"]:
+                        _zd_hit      = True
+                        sev          = "critical" if zd["score"] >= 70 else "high"
+                        log(f"  ZERO-DAY RISK [{sev.upper()}] score={zd['score']} — {zd['summary']}")
+                        all_new_alerts.append(
+                            (library, registry, sev, "zero_day_risk", old_ver, zd["summary"])
+                        )
+                        total_alerts += 1
+                        with _pg_conn() as _conn:
+                            diff_scanner.save_finding(
+                                _conn, library, registry, old_ver, new_ver, zd
+                            )
+                    else:
+                        log(f"  Diff scan: score={zd['score'] if zd else 'N/A'} — clean")
+                except Exception as _zd_err:
+                    log(f"  diff_scanner error: {_zd_err}")
+
+            if n == 0 and not _zd_hit:
                 log(f"  No changes detected")
         else:
             log(f"  First snapshot — no diff yet")

@@ -1,0 +1,120 @@
+# NPM zero-day detection rules
+# Evaluated against added lines (+lines) in version diffs.
+#
+# Fields: same as pypi.yaml — see that file for field docs.
+
+# ── Install hook rules ────────────────────────────────────────────────────────
+# npm lifecycle scripts run automatically at `npm install` time.
+# preinstall/postinstall added to package.json = immediate red flag.
+
+- id: install-script-added
+  weight: 40
+  location_scaled: false
+  file_pattern: "package\\.json$"
+  description: "lifecycle install script added — executes automatically at npm install"
+  match:
+    any:
+      - regex: "\"preinstall\"\\s*:"
+      - regex: "\"postinstall\"\\s*:"
+      - regex: "\"install\"\\s*:"
+      - regex: "\"prepare\"\\s*:"
+
+# ── Code execution ─────────────────────────────────────────────────────────────
+
+- id: exec-eval-js
+  weight: 35
+  location_scaled: true
+  description: "eval() or Function() constructor — arbitrary code execution"
+  match:
+    any:
+      - regex: "\\beval\\s*\\("
+      - regex: "new\\s+Function\\s*\\("
+      - regex: "child_process\\.exec\\s*\\("
+      - regex: "child_process\\.execSync\\s*\\("
+      - regex: "child_process\\.spawn\\s*\\("
+      - regex: "require\\s*\\(\\s*['\"]child_process['\"]\\s*\\)"
+
+- id: dynamic-require
+  weight: 25
+  location_scaled: true
+  description: "dynamic require with variable — obfuscated module loading"
+  match:
+    regex: "require\\s*\\(\\s*[^'\"\\)]"
+
+# ── Credential exfiltration ────────────────────────────────────────────────────
+
+- id: cred-network-combo
+  weight: 45
+  location_scaled: false
+  description: "process.env access + outbound network — credential exfiltration"
+  match:
+    all:
+      - regex: "process\\.env"
+      - regex: "fetch\\s*\\(|require\\s*\\(\\s*['\"]https?['\"]|axios\\.|http\\.(get|request|post)|https\\.(get|request|post)"
+
+- id: env-file-exfil
+  weight: 40
+  location_scaled: false
+  description: "reading .env / SSH key files + network call — secrets theft"
+  match:
+    all:
+      - regex: "\\.env['\"|\\s/]|\\.npmrc|\\.pypirc|id_rsa|id_ed25519|\\.ssh/"
+      - regex: "readFileSync|readFile\\s*\\(|fs\\.read"
+
+- id: home-dir-exfil
+  weight: 40
+  location_scaled: false
+  description: "home directory traversal + network call — credential sweep"
+  match:
+    all:
+      - regex: "os\\.homedir\\s*\\(\\)|process\\.env\\.HOME|path\\.join.*home|require\\s*\\(['\"]os['\"]\\)"
+      - regex: "fetch\\s*\\(|axios\\.|http\\.(get|post)|https\\.(get|post)"
+
+# ── Obfuscation ────────────────────────────────────────────────────────────────
+
+- id: base64-exec-js
+  weight: 45
+  location_scaled: false
+  description: "Buffer base64 decode + eval/Function — obfuscated payload"
+  match:
+    all:
+      - regex: "Buffer\\.from\\s*\\([^)]+,\\s*['\"]base64['\"]\\)"
+      - regex: "\\beval\\s*\\(|new\\s+Function\\s*\\("
+
+- id: hex-string-exec
+  weight: 40
+  location_scaled: false
+  description: "hex-encoded string constructed and executed — char-code obfuscation"
+  match:
+    all:
+      - regex: "Buffer\\.from\\s*\\(['\"][0-9a-fA-F]{20,}['\"],\\s*['\"]hex['\"]\\)|\\\\x[0-9a-fA-F]{2}"
+      - regex: "\\beval\\s*\\(|new\\s+Function\\s*\\("
+
+- id: string-fromcharcode-exec
+  weight: 35
+  location_scaled: false
+  description: "String.fromCharCode array construction + eval — classic JS obfuscation"
+  match:
+    all:
+      - regex: "String\\.fromCharCode\\s*\\("
+      - regex: "\\beval\\s*\\(|new\\s+Function\\s*\\("
+
+# ── External binary / dropper ──────────────────────────────────────────────────
+
+- id: binary-dropper-js
+  weight: 45
+  location_scaled: false
+  description: "downloading and executing external binary — dropper pattern"
+  match:
+    all:
+      - regex: "fetch\\s*\\(|axios\\.|http\\.(get|request)|https\\.(get|request)"
+      - regex: "execSync|exec\\s*\\(|spawn\\s*\\(|chmod|writeFileSync.*chmod"
+
+- id: tempfile-exec-js
+  weight: 35
+  location_scaled: false
+  description: "writing to temp path then executing — dropper stage 2"
+  match:
+    all:
+      - regex: "writeFileSync|fs\\.writeFile|tmpdir\\s*\\(\\)|/tmp/"
+      - regex: "execSync|exec\\s*\\(|spawn\\s*\\(|child_process"
