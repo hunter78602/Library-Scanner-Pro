@@ -107,6 +107,71 @@ def _match(rule: dict, lines: list, filename: str) -> bool:
     return False
 
 
+# ── Bundled binary detection ───────────────────────────────────────────────────
+# Legitimate Python/NPM source packages should never contain compiled executables.
+# Magic byte signatures from GuardDog's bundled_binary.py heuristic.
+_BINARY_MAGIC: list[tuple] = [
+    (b'\x4d\x5a',             'Windows PE/EXE'),
+    (b'\x7f\x45\x4c\x46',    'ELF binary (Linux/Unix)'),
+    (b'\xfe\xed\xfa\xce',    'Mach-O 32-bit (macOS)'),
+    (b'\xfe\xed\xfa\xcf',    'Mach-O 64-bit (macOS)'),
+    (b'\xca\xfe\xba\xbe',    'Mach-O Universal / Java class'),
+]
+# Extensions that are always expected binaries — skip reporting them
+_BINARY_ALLOWED_EXTS = {'.pyc', '.pyo', '.so', '.dylib'}
+
+def _magic_type(raw: bytes) -> str | None:
+    """Return binary type label if raw bytes match a known executable magic, else None."""
+    for magic, label in _BINARY_MAGIC:
+        if raw[:len(magic)] == magic:
+            return label
+    return None
+
+def _scan_binaries_wheel(data: bytes) -> list:
+    """Return list of {filename, type} for any executables found in a .whl zip."""
+    found = []
+    try:
+        with zipfile.ZipFile(io.BytesIO(data)) as zf:
+            for name in zf.namelist():
+                ext = Path(name.lower()).suffix
+                if ext in _BINARY_ALLOWED_EXTS:
+                    continue
+                try:
+                    with zf.open(name) as f:
+                        header = f.read(8)
+                    kind = _magic_type(header)
+                    if kind:
+                        found.append({"filename": name, "type": kind})
+                except Exception:
+                    pass
+    except Exception:
+        pass
+    return found
+
+def _scan_binaries_tgz(data: bytes) -> list:
+    """Return list of {filename, type} for any executables found in a .tar.gz."""
+    found = []
+    try:
+        with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as tf:
+            for member in tf.getmembers():
+                if not member.isfile():
+                    continue
+                ext = Path(member.name.lower()).suffix
+                if ext in _BINARY_ALLOWED_EXTS:
+                    continue
+                try:
+                    f = tf.extractfile(member)
+                    if f:
+                        header = f.read(8)
+                        kind = _magic_type(header)
+                        if kind:
+                            found.append({"filename": member.name, "type": kind})
+                except Exception:
+                    pass
+    except Exception:
+        pass
+    return found
+
 # ── Archive extraction ─────────────────────────────────────────────────────────
 _TEXT_EXTS = {
     ".py", ".js", ".ts", ".json", ".yaml", ".yml",
@@ -226,6 +291,38 @@ _FETCH = {
     "NPM":  _npm_files,
     "npm":  _npm_files,
 }
+
+def _fetch_raw_artifact(library: str, registry: str, version: str) -> tuple[bytes, str] | tuple[None, None]:
+    """Download raw artifact bytes. Returns (bytes, filename) or (None, None)."""
+    try:
+        if registry == "PyPI":
+            r = _SESSION.get(f"https://pypi.org/pypi/{library}/{version}/json", timeout=10)
+            if r.status_code != 200:
+                return None, None
+            urls = r.json().get("urls") or []
+            artifact = (
+                next((u for u in urls if u["filename"].endswith(".whl")), None)
+                or next((u for u in urls if u["filename"].endswith(".tar.gz")), None)
+            )
+            if not artifact or artifact.get("size", 0) > MAX_ARTIFACT_MB * 1024 * 1024:
+                return None, None
+            return _SESSION.get(artifact["url"], timeout=20).content, artifact["filename"]
+
+        elif registry in ("NPM", "npm"):
+            r = _SESSION.get(f"https://registry.npmjs.org/{library}/{version}", timeout=10)
+            if r.status_code != 200:
+                return None, None
+            tarball_url = r.json().get("dist", {}).get("tarball", "")
+            if not tarball_url:
+                return None, None
+            dl = _SESSION.get(tarball_url, timeout=20)
+            if len(dl.content) > MAX_ARTIFACT_MB * 1024 * 1024:
+                return None, None
+            return dl.content, f"{library}-{version}.tgz"
+
+    except Exception:
+        pass
+    return None, None
 
 
 # ── Diff computation ───────────────────────────────────────────────────────────
@@ -359,9 +456,28 @@ def scan(library: str, registry: str,
     if not new_files:
         return None
 
-    rules          = _load_rules(registry)
-    diff_results   = _diff(old_files, new_files)
+    rules           = _load_rules(registry)
+    diff_results    = _diff(old_files, new_files)
     score, findings = _score_diff(diff_results, rules)
+
+    # ── Bundled binary check on new artifact (GuardDog heuristic) ─────────────
+    raw_bytes, fname = _fetch_raw_artifact(library, registry, new_version)
+    if raw_bytes and fname:
+        if fname.endswith(".whl"):
+            bin_hits = _scan_binaries_wheel(raw_bytes)
+        else:
+            bin_hits = _scan_binaries_tgz(raw_bytes)
+
+        BINARY_SCORE = 60   # single hit = immediate alert (above threshold of 40)
+        for hit in bin_hits:
+            score += BINARY_SCORE
+            findings.append({
+                "rule_id":   "bundled-binary",
+                "desc":      f"Embedded {hit['type']} found — executable binary in source package",
+                "filename":  hit["filename"],
+                "weight":    BINARY_SCORE,
+                "raw_score": BINARY_SCORE,
+            })
 
     # Build a short human-readable summary (top 5 findings)
     top = sorted(findings, key=lambda f: f["raw_score"], reverse=True)[:5]

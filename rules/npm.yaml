@@ -118,3 +118,40 @@
     all:
       - regex: "writeFileSync|fs\\.writeFile|tmpdir\\s*\\(\\)|/tmp/"
       - regex: "execSync|exec\\s*\\(|spawn\\s*\\(|child_process"
+
+# ── System surveillance ────────────────────────────────────────────────────────
+
+- id: clipboard-access-js
+  weight: 50
+  location_scaled: false
+  description: "clipboard read in Node.js — password or crypto address theft (GuardDog)"
+  match:
+    any:
+      - regex: "require\\s*\\(['\"]clipboardy['\"]\\)"
+      - regex: "require\\s*\\(['\"]copy-paste['\"]\\)"
+      - regex: "require\\s*\\(['\"]node-clipboard['\"]\\)"
+      - regex: "navigator\\.clipboard\\.(read|readText)\\s*\\("
+      - regex: "electron.*clipboard\\.readText\\s*\\("
+
+- id: screenshot-capture-js
+  weight: 50
+  location_scaled: false
+  description: "screen capture in Node.js — sensitive data theft (GuardDog)"
+  match:
+    any:
+      - regex: "require\\s*\\(['\"]screenshot-desktop['\"]\\)"
+      - regex: "require\\s*\\(['\"]screencapture['\"]\\)"
+      - regex: "require\\s*\\(['\"]robotjs['\"]\\).*screen"
+      - regex: "desktopCapturer\\.getSources\\s*\\("
+      - regex: "require\\s*\\(['\"]jimp['\"]\\).*screen"
+
+# ── Hidden process execution ───────────────────────────────────────────────────
+
+- id: silent-process-exec-js
+  weight: 35
+  location_scaled: true
+  description: "child_process with stdio ignored — execution hidden from user (GuardDog)"
+  match:
+    all:
+      - regex: "execSync|exec\\s*\\(|spawnSync|spawn\\s*\\("
+      - regex: "stdio.*['\"]ignore['\"]|pipe.*null|stdout.*null"

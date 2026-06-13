@@ -136,3 +136,45 @@
     all:
       - regex: "tempfile\\.|/tmp/|\\.write\\s*\\(|NamedTemporaryFile"
       - regex: "subprocess\\.|os\\.system|os\\.execv|os\\.popen|chmod"
+
+# ── System surveillance ────────────────────────────────────────────────────────
+# Legitimate packages never read clipboard or capture screenshots.
+# These are data-theft patterns from GuardDog's sourcecode heuristics.
+
+- id: clipboard-access
+  weight: 50
+  location_scaled: false
+  description: "clipboard read/write — password or crypto address theft (GuardDog)"
+  match:
+    any:
+      - regex: "pyperclip\\.(paste|copy)\\s*\\("
+      - regex: "pandas\\.read_clipboard\\s*\\("
+      - regex: "\\.to_clipboard\\s*\\("
+      - regex: "tkinter.*clipboard_get|root\\.clipboard_get"
+      - regex: "win32clipboard\\.GetClipboardData"
+
+- id: screenshot-capture
+  weight: 50
+  location_scaled: false
+  description: "screen capture — sensitive data visible on screen stolen (GuardDog)"
+  match:
+    any:
+      - regex: "ImageGrab\\.grab\\s*\\("
+      - regex: "pyscreenshot\\.grab\\s*\\("
+      - regex: "pyautogui\\.screenshot\\s*\\("
+      - regex: "mss\\.mss\\s*\\(|with\\s+mss\\s*\\("
+      - regex: "d3dshot.*\\.screenshot\\s*\\("
+      - regex: "screencapture|scrot\\s*\\("
+
+# ── Hidden process execution ───────────────────────────────────────────────────
+# Redirecting stdout+stderr to DEVNULL hides execution from user/logs.
+# Legitimate background tasks rarely suppress ALL output simultaneously.
+
+- id: silent-process-exec
+  weight: 35
+  location_scaled: true
+  description: "subprocess with DEVNULL stdout+stderr — execution hidden from user (GuardDog)"
+  match:
+    all:
+      - regex: "subprocess\\.(run|call|Popen|check_output|check_call)"
+      - regex: "DEVNULL"
