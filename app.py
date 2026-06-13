@@ -3220,6 +3220,13 @@ def _extract_evidence(check_id: str, result: dict, row: dict) -> dict:
         tier     = tier_raw.split(" ", 1)[-1].split("(")[0].strip() if tier_raw else "Unknown"
         return {"country": country, "tier": tier}
 
+    if check_id == "C6":
+        details = result.get("details", "")
+        m_count = re.search(r"^(\d+)", result.get("label", ""))
+        count   = int(m_count.group(1)) if m_count else None
+        source  = "contributors" if "contributors" in details else "collaborators" if "collaborators" in details else None
+        return {"maintainer_count": count, "source": source}
+
     if check_id == "C7":
         library = str(row.get("Library", "") or "").strip().lower()
         m = re.search(r"from '([^']+)'", result.get("details", ""))
