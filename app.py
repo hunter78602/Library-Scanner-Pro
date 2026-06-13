@@ -2823,6 +2823,121 @@ def _check_typosquatting(row, context):
             "details":  f"'{library}' does not closely match any known popular package"}
 
 
+# ─── Check 8 — Homoglyph Attack ──────────────────────────────────────────────
+def _check_homoglyph(row, context):
+    """
+    Detects non-ASCII lookalike characters in the package name.
+    Attackers substitute Cyrillic/Greek/Math chars that look identical to Latin
+    letters — terminal renders them the same, but they resolve to a different pkg.
+    """
+    library = str(row.get("Library", "") or "").strip()
+    if not library:
+        return {"severity": "pass", "label": "N/A", "details": "No library name"}
+
+    try:
+        library.encode("ascii")
+    except UnicodeEncodeError:
+        bad = [f"U+{ord(c):04X}('{c}')" for c in library if ord(c) > 127][:5]
+        return {"severity": "critical",
+                "label":   "Homoglyph chars in name",
+                "details": (f"'{library}' contains non-ASCII lookalike characters: "
+                            f"{', '.join(bad)} — classic homoglyph impersonation attack")}
+
+    return {"severity": "pass",
+            "label":    "Name clean",
+            "details":  f"'{library}' contains only standard ASCII characters"}
+
+
+# ─── Check 9 — Phantom Repository ────────────────────────────────────────────
+def _check_phantom_repo(row, context):
+    """
+    Checks whether the linked GitHub repository actually exists.
+    Attackers list a deleted/nonexistent repo URL to appear legitimate.
+    A 404 on the claimed repo = phantom repo = credibility fraud.
+    """
+    repo = str(row.get("Repo", "") or "").strip()
+    if not repo or repo in ("—", "N/A", ""):
+        return {"severity": "medium",
+                "label":    "No repo linked",
+                "details":  "Package has no linked source repository — zero transparency"}
+
+    if "github.com" not in repo.lower():
+        return {"severity": "pass",
+                "label":    "Non-GitHub repo",
+                "details":  f"Repo present (non-GitHub): {repo[:60]}"}
+
+    cache = st.session_state.setdefault("_phantom_repo_cache", {})
+    if repo in cache:
+        code = cache[repo]
+    else:
+        code = -1
+        try:
+            r = requests.head(repo, timeout=8, allow_redirects=True)
+            code = r.status_code
+        except Exception:
+            pass
+        cache[repo] = code
+
+    if code == 404:
+        return {"severity": "critical",
+                "label":    "Phantom repo (404)",
+                "details":  f"Claimed repo returns 404 — does not exist: {repo[:80]}"}
+    if code == -1:
+        return {"severity": "low",
+                "label":    "Repo unreachable",
+                "details":  "Could not reach repository URL — check manually"}
+    return {"severity": "pass",
+            "label":    f"Repo exists ({code})",
+            "details":  f"Repository URL is reachable: {repo[:60]}"}
+
+
+# ─── Check 10 — Namespace Squatting ──────────────────────────────────────────
+_ORG_PREFIXES: dict = {
+    "aws":         "amazon",      "google":      "google",
+    "microsoft":   "microsoft",   "stripe":      "stripe",
+    "twilio":      "twilio",      "firebase":    "firebase",
+    "shopify":     "shopify",     "cloudflare":  "cloudflare",
+    "hashicorp":   "hashicorp",   "vercel":      "vercel",
+    "netlify":     "netlify",     "mongodb":     "mongodb",
+    "elastic":     "elastic",     "docker":      "docker",
+    "kubernetes":  "kubernetes",  "grafana":     "grafana",
+    "datadog":     "datadog",     "sentry":      "sentry",
+    "openai":      "openai",      "anthropic":   "anthropic",
+    "huggingface": "huggingface", "pytorch":     "pytorch",
+    "tensorflow":  "tensorflow",  "fastapi":     "tiangolo",
+}
+
+def _check_namespace_squatting(row, context):
+    """
+    Flags packages that use a well-known org name as a prefix (aws-*, google-*)
+    but whose repo/maintainer does not actually belong to that organisation.
+    Classic impersonation trick to get developers to install fake 'official' SDKs.
+    """
+    library    = str(row.get("Library",    "") or "").strip().lower()
+    repo       = str(row.get("Repo",       "") or "").strip().lower()
+    maintainer = str(row.get("Maintainer", "") or "").strip().lower()
+
+    if not library:
+        return {"severity": "pass", "label": "N/A", "details": "No library name"}
+
+    matched_prefix = matched_org = None
+    for prefix, org in _ORG_PREFIXES.items():
+        if library.startswith(prefix + "-") or library.startswith(prefix + "_"):
+            if org not in repo and org not in maintainer and prefix not in maintainer:
+                matched_prefix, matched_org = prefix, org
+                break
+
+    if not matched_prefix:
+        return {"severity": "pass",
+                "label":    "No namespace squatting",
+                "details":  "Package name does not impersonate a known organisation"}
+
+    return {"severity": "high",
+            "label":    f"Namespace squatting? ('{matched_prefix}-')",
+            "details":  (f"Name starts with '{matched_prefix}-' but repo/maintainer "
+                         f"doesn't belong to {matched_org} — possible impersonation of official SDK")}
+
+
 # ── Security Checks — JSON node ───────────────────────────────────────────────
 # Each check is a self-contained, JSON-serialisable record (no Python function
 # refs here). To add a new check:
@@ -2961,6 +3076,56 @@ _SECURITY_CHECKS_JSON = [
                          "details": "Name does not closely match any known popular package"},
         },
     },
+    {
+        "id":          "C8",
+        "json_id":     "HOMOGLYPH_ATTACK",
+        "category":    "identity",
+        "name":        "Homoglyph Attack Detection",
+        "description": "Detects non-ASCII lookalike characters in the package name "
+                       "(e.g. Cyrillic 'е' instead of Latin 'e'). Renders identically "
+                       "in terminal but resolves to a completely different package.",
+        "enabled":     True,
+        "severity_thresholds": {
+            "critical": {"label": "Homoglyph chars in name",
+                         "details": "Non-ASCII lookalike characters found — homoglyph impersonation"},
+            "pass":     {"label": "Name clean",
+                         "details": "Package name contains only standard ASCII characters"},
+        },
+    },
+    {
+        "id":          "C9",
+        "json_id":     "PHANTOM_REPO",
+        "category":    "integrity",
+        "name":        "Phantom Repository",
+        "description": "Checks whether the linked GitHub repository actually exists. "
+                       "Attackers list deleted or nonexistent repo URLs to appear "
+                       "legitimate — a 404 response exposes this credibility fraud.",
+        "enabled":     True,
+        "severity_thresholds": {
+            "critical": {"label": "Phantom repo (404)",
+                         "details": "Claimed repository returns 404 — does not exist"},
+            "medium":   {"label": "No repo linked",
+                         "details": "Package has no source repository — zero transparency"},
+            "pass":     {"label": "Repo exists",
+                         "details": "Repository URL is reachable"},
+        },
+    },
+    {
+        "id":          "C10",
+        "json_id":     "NAMESPACE_SQUATTING",
+        "category":    "identity",
+        "name":        "Namespace Squatting",
+        "description": "Flags packages that use a well-known organisation prefix "
+                       "(aws-*, google-*, stripe-*) but whose maintainer/repo does "
+                       "not belong to that organisation — impersonating official SDKs.",
+        "enabled":     True,
+        "severity_thresholds": {
+            "high": {"label": "Namespace squatting?",
+                     "details": "Name uses org prefix but repo/maintainer doesn't match"},
+            "pass": {"label": "No namespace squatting",
+                     "details": "Package name does not impersonate a known organisation"},
+        },
+    },
 ]
 
 # ── Check function map — one line per check ────────────────────────────────────
@@ -2974,6 +3139,9 @@ _CHECK_FN_MAP: dict = {
     "C5": _check_country,
     "C6": _check_maintainer_count,
     "C7": _check_typosquatting,
+    "C8": _check_homoglyph,
+    "C9": _check_phantom_repo,
+    "C10": _check_namespace_squatting,
 }
 
 # ── Rebuild _SECURITY_CHECKS for backward-compat with all existing references ──
@@ -3002,7 +3170,7 @@ def _run_security_checks(row, token=""):
 # ── Per-check lookup map and weights ──────────────────────────────────────────
 _CHECK_META   = {chk["id"]: chk for chk in _SECURITY_CHECKS_JSON}
 # Max risk contribution per check (mirrors _risk_score() dimension weights)
-_CHECK_WEIGHT = {"C1": 10, "C2": 30, "C3": 25, "C4": 15, "C5": 20, "C6": 5, "C7": 20}
+_CHECK_WEIGHT = {"C1": 10, "C2": 30, "C3": 25, "C4": 15, "C5": 20, "C6": 5, "C7": 20, "C8": 25, "C9": 20, "C10": 15}
 # Severity → human status label
 _SEV_TO_STATUS = {
     "pass": "pass", "low": "pass",
@@ -3059,6 +3227,23 @@ def _extract_evidence(check_id: str, result: dict, row: dict) -> dict:
         dist_m  = re.search(r"(\d+) edit", result.get("details", ""))
         dist    = int(dist_m.group(1)) if dist_m else None
         return {"package_name": library, "closest_match": closest, "edit_distance": dist}
+
+    if check_id == "C8":
+        library = str(row.get("Library", "") or "").strip()
+        bad = [c for c in library if ord(c) > 127]
+        return {"package_name": library, "non_ascii_chars": bad}
+
+    if check_id == "C9":
+        repo = str(row.get("Repo", "") or "").strip()
+        m = re.search(r"\((\d+)\)", result.get("label", ""))
+        code = int(m.group(1)) if m else None
+        return {"repo_url": repo, "http_status": code}
+
+    if check_id == "C10":
+        library = str(row.get("Library", "") or "").strip().lower()
+        m = re.search(r"'([^']+)-'", result.get("details", ""))
+        prefix = m.group(1) if m else None
+        return {"package_name": library, "matched_prefix": prefix}
 
     return {}
 
