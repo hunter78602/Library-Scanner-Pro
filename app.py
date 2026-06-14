@@ -2812,7 +2812,9 @@ def _check_typosquatting(row, context):
                 "label":    f"Suspicious (2 edits from '{closest}')",
                 "details":  (f"'{library}' is 2 edits away from '{closest}'"
                              f" — review carefully before use")}
-    if min_dist == 3 and len(library) <= 7:
+    if (min_dist == 3
+            and len(library) >= 6
+            and abs(len(library) - len(closest)) <= 1):
         return {"severity": "medium",
                 "label":    f"Similar name to '{closest}'",
                 "details":  (f"'{library}' has some similarity to '{closest}'"
