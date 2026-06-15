@@ -285,7 +285,9 @@ _pg_pool: "psycopg2.pool.ThreadedConnectionPool | None" = None
 def _get_pg_pool() -> "psycopg2.pool.ThreadedConnectionPool":
     global _pg_pool
     if _pg_pool is None:
-        _pg_pool = psycopg2.pool.ThreadedConnectionPool(1, 5, dsn=DATABASE_URL)
+        # Re-read URL here (not at module load time) so st.secrets is ready
+        dsn = _load_db_url()
+        _pg_pool = psycopg2.pool.ThreadedConnectionPool(1, 5, dsn=dsn)
     return _pg_pool
 
 def _shutdown_pg_pool():
@@ -2516,6 +2518,28 @@ _SEV_LABEL = {
     "medium":   "Medium",   "high":     "High",
     "critical": "Critical",
 }
+
+# ── GitHub Actions Monitor helpers ───────────────────────────────────────────
+_GH_REPO     = "hunter78602/Library-Scanner-Pro"
+_GH_WORKFLOW = "monitor.yml"
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _fetch_last_workflow_run(token: str = ""):
+    try:
+        _hdrs = {"Accept": "application/vnd.github+json"}
+        if token:
+            _hdrs["Authorization"] = f"Bearer {token}"
+        _r = requests.get(
+            f"https://api.github.com/repos/{_GH_REPO}/actions/workflows/{_GH_WORKFLOW}/runs",
+            params={"per_page": 1},
+            headers=_hdrs, timeout=8
+        )
+        if _r.status_code == 200:
+            _runs = _r.json().get("workflow_runs", [])
+            return _runs[0] if _runs else None
+    except Exception:
+        pass
+    return None
 
 # ── Typosquatting data ────────────────────────────────────────────────────────
 _POPULAR_PYPI: set = {
@@ -7401,9 +7425,6 @@ with st.sidebar:
     # ── GitHub Actions Monitor ────────────────────────────────────────────────
     st.markdown('<div class="sb-label">GitHub Actions Monitor</div>', unsafe_allow_html=True)
 
-    _GH_REPO     = "hunter78602/Library-Scanner-Pro"
-    _GH_WORKFLOW = "monitor.yml"
-
     # ── 1. Next Scheduled Run ─────────────────────────────────────────────────
     def _next_scheduled_run_utc():
         _now = datetime.datetime.utcnow()
@@ -7436,24 +7457,6 @@ with st.sidebar:
     """)
 
     # ── 2. Last Run Status ────────────────────────────────────────────────────
-    @st.cache_data(ttl=300, show_spinner=False)
-    def _fetch_last_workflow_run(token: str = ""):
-        try:
-            _hdrs = {"Accept": "application/vnd.github+json"}
-            if token:
-                _hdrs["Authorization"] = f"Bearer {token}"
-            _r = requests.get(
-                f"https://api.github.com/repos/{_GH_REPO}/actions/workflows/{_GH_WORKFLOW}/runs",
-                params={"per_page": 1},
-                headers=_hdrs, timeout=8
-            )
-            if _r.status_code == 200:
-                _runs = _r.json().get("workflow_runs", [])
-                return _runs[0] if _runs else None
-        except Exception:
-            pass
-        return None
-
     _last_run = _fetch_last_workflow_run(github_token or "")
     if _last_run:
         _conclusion  = _last_run.get("conclusion") or _last_run.get("status", "unknown")
