@@ -8343,6 +8343,14 @@ if "scan_data" in st.session_state:
                         icon="🚨",
                     )
 
+                    st.download_button(
+                        "⬇ Export Raised Queries (JSON)",
+                        json.dumps(_rq, indent=2, ensure_ascii=False),
+                        "raised_queries.json", "application/json",
+                        use_container_width=False,
+                        key="dl_raised_queries_json",
+                    )
+
                     for _q in _rq:
                         _qs    = _q["overall_risk"].get("worst_check_severity") or _q["overall_risk"].get("severity", "pass")
                         _qemj  = _SEV_EMOJI.get(_qs, "🟡")
