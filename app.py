@@ -7379,97 +7379,92 @@ with st.sidebar:
                                      placeholder="admin:password", key="nxs_creds")
 
     # ── GitHub Actions Monitor ────────────────────────────────────────────────
-    st.markdown('<div class="sb-label">GitHub Actions Monitor</div>', unsafe_allow_html=True)
+    try:
+        st.markdown('<div class="sb-label">GitHub Actions Monitor</div>', unsafe_allow_html=True)
 
-    # ── 1. Next Scheduled Run ─────────────────────────────────────────────────
-    def _next_scheduled_run_utc():
-        _now = datetime.datetime.utcnow()
+        # ── 1. Next Scheduled Run ─────────────────────────────────────────────
+        _now_utc   = datetime.datetime.utcnow()
+        _ist_delta = datetime.timedelta(hours=5, minutes=30)
         for _h in [0, 6, 12, 18]:
-            _candidate = _now.replace(hour=_h, minute=0, second=0, microsecond=0)
-            if _candidate > _now:
-                return _candidate
-        return (_now + datetime.timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+            _candidate = _now_utc.replace(hour=_h, minute=0, second=0, microsecond=0)
+            if _candidate > _now_utc:
+                _next_utc = _candidate
+                break
+        else:
+            _next_utc = (_now_utc + datetime.timedelta(days=1)).replace(
+                hour=0, minute=0, second=0, microsecond=0)
+        _next_ist  = _next_utc + _ist_delta
+        _diff_secs = int((_next_utc - _now_utc).total_seconds())
+        _hrs_left  = _diff_secs // 3600
+        _mins_left = (_diff_secs % 3600) // 60
+        st.markdown(
+            f"<div style='background:#070d1b;border:1px solid #12243d;border-radius:10px;"
+            f"padding:0.75rem 1rem;margin-bottom:0.5rem'>"
+            f"<div style='color:#4a7090;font-size:0.63rem;text-transform:uppercase;"
+            f"letter-spacing:1px'>Next Scheduled Run</div>"
+            f"<div style='color:#06b6d4;font-size:0.95rem;font-weight:700;margin-top:0.2rem'>"
+            f"{_next_ist.strftime('%I:%M %p IST')}</div>"
+            f"<div style='color:#4a6580;font-size:0.72rem;margin-top:0.1rem'>"
+            f"in {_hrs_left}h {_mins_left}m &nbsp;·&nbsp; 00:00 / 06:00 / 12:00 / 18:00 UTC"
+            f"</div></div>",
+            unsafe_allow_html=True)
 
-    _next_utc  = _next_scheduled_run_utc()
-    _now_utc   = datetime.datetime.utcnow()
-    _ist_delta = datetime.timedelta(hours=5, minutes=30)
-    _next_ist  = _next_utc + _ist_delta
-    _diff_secs = int((_next_utc - _now_utc).total_seconds())
-    _hrs_left  = _diff_secs // 3600
-    _mins_left = (_diff_secs % 3600) // 60
-
-    _md(f"""
-    <div style="background:#070d1b;border:1px solid #12243d;border-radius:10px;
-                padding:0.75rem 1rem;margin-bottom:0.5rem">
-      <div style="color:#4a7090;font-size:0.63rem;text-transform:uppercase;
-                  letter-spacing:1px">Next Scheduled Run</div>
-      <div style="color:#06b6d4;font-size:0.95rem;font-weight:700;margin-top:0.2rem">
-        {_next_ist.strftime("%I:%M %p IST")}
-      </div>
-      <div style="color:#4a6580;font-size:0.72rem;margin-top:0.1rem">
-        in {_hrs_left}h {_mins_left}m &nbsp;·&nbsp; 00:00 / 06:00 / 12:00 / 18:00 UTC
-      </div>
-    </div>
-    """)
-
-    # ── 2. Last Run Status ────────────────────────────────────────────────────
-    _last_run = _fetch_last_workflow_run(github_token or "")
-    if _last_run:
-        _conclusion  = _last_run.get("conclusion") or _last_run.get("status", "unknown")
-        _run_number  = _last_run.get("run_number", "?")
-        _updated_at  = (_last_run.get("updated_at", "") or "")[:16].replace("T", " ")
-        _dur_str     = ""
-        try:
-            _ts = datetime.datetime.fromisoformat(
-                (_last_run.get("run_started_at") or "").replace("Z", "+00:00"))
-            _te = datetime.datetime.fromisoformat(
-                (_last_run.get("updated_at") or "").replace("Z", "+00:00"))
-            _dur = int((_te - _ts).total_seconds())
-            _dur_str = f"{_dur // 60}m {_dur % 60}s"
-        except Exception:
-            pass
-        _sc = {"success": "#10b981", "failure": "#ef4444",
-               "cancelled": "#f59e0b"}.get(_conclusion, "#94a3b8")
-        _se = {"success": "✅", "failure": "❌",
-               "cancelled": "⚠️"}.get(_conclusion, "⏳")
-        _md(f"""
-        <div style="background:#070d1b;border:1px solid #12243d;border-radius:10px;
-                    padding:0.75rem 1rem;margin-bottom:0.5rem">
-          <div style="color:#4a7090;font-size:0.63rem;text-transform:uppercase;
-                      letter-spacing:1px">Last Run &nbsp;·&nbsp; #{_run_number}</div>
-          <div style="color:{_sc};font-size:0.88rem;font-weight:700;margin-top:0.2rem">
-            {_se} {_conclusion.upper()}
-          </div>
-          <div style="color:#4a6580;font-size:0.72rem;margin-top:0.1rem">
-            {_updated_at} UTC{' &nbsp;·&nbsp; ' + _dur_str if _dur_str else ''}
-          </div>
-        </div>
-        """)
-    else:
-        st.caption("Add GitHub Token above to see last run status.")
-
-    # ── 3. Manual Trigger Button ──────────────────────────────────────────────
-    if github_token:
-        if st.button("▶ Run Monitor Now", use_container_width=True,
-                     key="_manual_trigger", type="primary"):
+        # ── 2. Last Run Status ────────────────────────────────────────────────
+        _last_run = _fetch_last_workflow_run(github_token or "")
+        if _last_run:
+            _conclusion = _last_run.get("conclusion") or _last_run.get("status", "unknown")
+            _run_number = _last_run.get("run_number", "?")
+            _updated_at = (_last_run.get("updated_at", "") or "")[:16].replace("T", " ")
+            _dur_str = ""
             try:
-                _tr = requests.post(
-                    f"https://api.github.com/repos/{_GH_REPO}/actions/workflows"
-                    f"/{_GH_WORKFLOW}/dispatches",
-                    json={"ref": "main"},
-                    headers={"Authorization": f"Bearer {github_token}",
-                             "Accept": "application/vnd.github+json"},
-                    timeout=10
-                )
-                if _tr.status_code == 204:
-                    st.success("Workflow triggered!", icon="🚀")
-                    st.cache_data.clear()
-                else:
-                    st.error(f"Failed — HTTP {_tr.status_code}", icon="❌")
-            except Exception as _te:
-                st.error(f"Error: {_te}", icon="❌")
-    else:
-        st.caption("Add GitHub Token above to enable manual trigger.")
+                _ts = datetime.datetime.fromisoformat(
+                    (_last_run.get("run_started_at") or "").replace("Z", "+00:00"))
+                _te = datetime.datetime.fromisoformat(
+                    (_last_run.get("updated_at") or "").replace("Z", "+00:00"))
+                _dur_str = f"{int((_te-_ts).total_seconds())//60}m {int((_te-_ts).total_seconds())%60}s"
+            except Exception:
+                pass
+            _sc = {"success":"#10b981","failure":"#ef4444","cancelled":"#f59e0b"}.get(_conclusion,"#94a3b8")
+            _se = {"success":"✅","failure":"❌","cancelled":"⚠️"}.get(_conclusion,"⏳")
+            st.markdown(
+                f"<div style='background:#070d1b;border:1px solid #12243d;border-radius:10px;"
+                f"padding:0.75rem 1rem;margin-bottom:0.5rem'>"
+                f"<div style='color:#4a7090;font-size:0.63rem;text-transform:uppercase;"
+                f"letter-spacing:1px'>Last Run &nbsp;·&nbsp; #{_run_number}</div>"
+                f"<div style='color:{_sc};font-size:0.88rem;font-weight:700;margin-top:0.2rem'>"
+                f"{_se} {_conclusion.upper()}</div>"
+                f"<div style='color:#4a6580;font-size:0.72rem;margin-top:0.1rem'>"
+                f"{_updated_at} UTC{' &nbsp;·&nbsp; ' + _dur_str if _dur_str else ''}"
+                f"</div></div>",
+                unsafe_allow_html=True)
+        else:
+            st.caption("Add GitHub Token above to see last run status.")
+
+        # ── 3. Manual Trigger Button ──────────────────────────────────────────
+        if github_token:
+            if st.button("▶ Run Monitor Now", use_container_width=True,
+                         key="_manual_trigger", type="primary"):
+                try:
+                    _tr = requests.post(
+                        f"https://api.github.com/repos/{_GH_REPO}/actions/workflows"
+                        f"/{_GH_WORKFLOW}/dispatches",
+                        json={"ref": "main"},
+                        headers={"Authorization": f"Bearer {github_token}",
+                                 "Accept": "application/vnd.github+json"},
+                        timeout=10
+                    )
+                    if _tr.status_code == 204:
+                        st.success("Workflow triggered!", icon="🚀")
+                        st.cache_data.clear()
+                    else:
+                        st.error(f"Failed — HTTP {_tr.status_code}", icon="❌")
+                except Exception as _te:
+                    st.error(f"Error: {_te}", icon="❌")
+        else:
+            st.caption("Add GitHub Token above to enable manual trigger.")
+
+    except Exception as _gam_err:
+        st.error(f"GitHub Actions Monitor error: {_gam_err}")
 
     # ── Custom Rules / Blocklist (CSV or JSON) ────────────────────────────────
     # Users upload their own pattern-based rules that deduct from each package's
