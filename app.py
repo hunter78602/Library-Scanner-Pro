@@ -3175,7 +3175,7 @@ _CHECK_META   = {chk["id"]: chk for chk in _SECURITY_CHECKS_JSON}
 _CHECK_WEIGHT = {"C1": 10, "C2": 30, "C3": 25, "C4": 15, "C5": 20, "C6": 5, "C7": 20, "C8": 25, "C9": 20, "C10": 15}
 # Severity → human status label
 _SEV_TO_STATUS = {
-    "pass": "pass", "low": "pass",
+    "pass": "pass", "low": "pass", "info": "pass",
     "medium": "warning", "high": "fail", "critical": "fail",
 }
 # Severity → fraction of check weight applied as risk_score

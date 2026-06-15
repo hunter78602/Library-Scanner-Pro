@@ -287,7 +287,9 @@ def check_typosquatting(row: dict) -> dict:
     if min_dist == 2:
         return {"severity": "high", "label": f"Suspicious (2 edits from '{closest}')",
                 "details": f"'{library}' is 2 edits away from '{closest}' — review carefully"}
-    if min_dist == 3 and len(library) <= 7:
+    if (min_dist == 3
+            and len(library) >= 6
+            and abs(len(library) - len(closest)) <= 1):
         return {"severity": "medium", "label": f"Similar to '{closest}'",
                 "details": f"'{library}' has some similarity to '{closest}'"}
 

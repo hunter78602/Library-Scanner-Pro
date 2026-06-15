@@ -153,5 +153,5 @@
   description: "child_process with stdio ignored — execution hidden from user (GuardDog)"
   match:
     all:
-      - regex: "execSync|exec\\s*\\(|spawnSync|spawn\\s*\\("
-      - regex: "stdio.*['\"]ignore['\"]|pipe.*null|stdout.*null"
+      - regex: "child_process|execSync|spawnSync"
+      - regex: "stdio.*['\"]ignore['\"]|stdout.*null|stderr.*null"
