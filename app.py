@@ -514,7 +514,11 @@ def save_scan_history(audit_rows: list, raised_queries: list, summary: dict):
         pass
 
 
-_init_db()
+try:
+    _init_db()
+except Exception as _db_init_err:
+    import traceback as _tb
+    print(f"[WARN] _init_db failed: {_db_init_err}\n{_tb.format_exc()}")
 
 # ── Per-package profile cache (PostgreSQL — replaces profile_cache/*.json) ─────
 # Per-field TTLs (seconds) — unchanged from the file-based version
