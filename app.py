@@ -1,7 +1,7 @@
 import streamlit as st
 import re
 import requests, pandas as pd, json, time, datetime
-import os, pathlib
+import os, pathlib, atexit
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import contextmanager
 
@@ -268,6 +268,17 @@ def _get_pg_pool() -> "psycopg2.pool.ThreadedConnectionPool":
     if _pg_pool is None:
         _pg_pool = psycopg2.pool.ThreadedConnectionPool(1, 5, dsn=DATABASE_URL)
     return _pg_pool
+
+def _shutdown_pg_pool():
+    global _pg_pool
+    if _pg_pool is not None:
+        try:
+            _pg_pool.closeall()
+        except Exception:
+            pass
+        _pg_pool = None
+
+atexit.register(_shutdown_pg_pool)
 
 @contextmanager
 def _pg_conn():
