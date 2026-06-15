@@ -450,3 +450,64 @@ packages:
 
   - name: element-ui-for-gov
     registry: NPM
+
+  # ── T-Mobile Asset Stack (detected via EASM fingerprinting) ─────────────────
+  # Source: T-Mobile asset inventory — subdomains with active deployments
+
+  # Frameworks
+  - name: next
+    registry: NPM
+
+  - name: vue
+    registry: NPM
+
+  - name: "@angular/core"
+    registry: NPM
+
+  - name: angular
+    registry: NPM
+
+  - name: react-router
+    registry: NPM
+
+  - name: alpinejs
+    registry: NPM
+
+  # Utility / interaction
+  - name: hammerjs
+    registry: NPM
+
+  - name: handlebars
+    registry: NPM
+
+  - name: requirejs
+    registry: NPM
+
+  - name: web-vitals
+    registry: NPM
+
+  # Media / UI
+  - name: tinymce
+    registry: NPM
+
+  - name: video.js
+    registry: NPM
+
+  - name: plotly.js
+    registry: NPM
+
+  - name: fullpage.js
+    registry: NPM
+
+  - name: swagger-ui
+    registry: NPM
+
+  # Monitoring / analytics (supply chain risk if compromised)
+  - name: "@sentry/browser"
+    registry: NPM
+
+  - name: statsig-js
+    registry: NPM
+
+  - name: "@fingerprintjs/fingerprintjs"
+    registry: NPM
