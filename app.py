@@ -8274,6 +8274,25 @@ if "scan_data" in st.session_state:
                              "High and above": 3, "Critical only": 4}[_sev_filter]
                 _filtered_audit = _audit_df_full[_audit_df_full["_agg_rank"] >= _min_rank]
 
+                # ── Export buttons — above the table so always visible ────────
+                _audit_export = _audit_df_full.drop(
+                    columns=["_results", "_agg_rank", "_row_data"], errors="ignore"
+                )
+                _ae1, _ae2 = st.columns(2)
+                _ae1.download_button(
+                    "⬇ Export Security Audit (CSV)",
+                    _audit_export.to_csv(index=False),
+                    "security_audit.csv", "text/csv",
+                    use_container_width=True, key="dl_audit_csv"
+                )
+                _ae2.download_button(
+                    "⬇ Export Security Audit (JSON)",
+                    json.dumps(_build_supply_chain_json(_audit_rows),
+                               indent=2, ensure_ascii=False),
+                    "security_audit.json", "application/json",
+                    use_container_width=True, key="dl_audit_json"
+                )
+
                 if _filtered_audit.empty:
                     st.success(
                         f"✅ No packages match the '{_sev_filter}' filter — "
@@ -8310,25 +8329,6 @@ if "scan_data" in st.session_state:
                                     f"· **{chk_meta['name']}** — {result['label']}"
                                 )
                                 st.caption(f"_{result['details']}_")
-
-                # ── Export the audit results ──────────────────────────────────
-                _audit_export = _audit_df_full.drop(
-                    columns=["_results", "_agg_rank"], errors="ignore"
-                )
-                _ae1, _ae2 = st.columns(2)
-                _ae1.download_button(
-                    "⬇ Export Security Audit (CSV)",
-                    _audit_export.to_csv(index=False),
-                    "security_audit.csv", "text/csv",
-                    use_container_width=True, key="dl_audit_csv"
-                )
-                _ae2.download_button(
-                    "⬇ Export Security Audit (JSON)",
-                    json.dumps(_build_supply_chain_json(_audit_rows),
-                               indent=2, ensure_ascii=False),
-                    "security_audit.json", "application/json",
-                    use_container_width=True, key="dl_audit_json"
-                )
 
                 # ── 🚨 Raised Queries ─────────────────────────────────────────
                 st.markdown(
