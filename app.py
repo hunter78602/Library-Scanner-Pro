@@ -7305,6 +7305,8 @@ def run_audit(query, github_token=None, kaggle_username=None, kaggle_key=None,
 
 # ── Sidebar ────────────────────────────────────────────────────────────────────
 with st.sidebar:
+    _db_ok = "✅" if _pg_pool is not None else "⚠️ DB not connected"
+    st.caption(f"build:43a5d97 · db:{_db_ok}")
     st.markdown("""
     <div style="padding:0.5rem 0 1rem">
       <div style="color:#06b6d4;font-size:1rem;font-weight:800;letter-spacing:-0.3px">
