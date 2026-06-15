@@ -8181,24 +8181,31 @@ if "scan_data" in st.session_state:
                     _geo_df = st.session_state["country_df"]
                     st.success("Countries refreshed!", icon="🌍")
 
-            if _geo_df is None or "Country" not in _geo_df.columns:
-                st.info(
-                    "Country data could not be loaded. Make sure you have packages "
-                    "in your scan results and that your GitHub token (if configured) "
-                    "isn't rate-limited.",
-                    icon="ℹ️"
-                )
-            else:
-                # Apply Country Tier classification to every row
+            # ── Build _gdf: merge country data if available, else use df ────
+            # Security checks C1-C10 run on _gdf regardless of country status.
+            # Only C5 (Country Risk) needs country data — it returns "unverified"
+            # gracefully when the Country column is missing.
+            if _geo_df is not None and "Country" in _geo_df.columns:
                 _gdf = _geo_df.copy()
                 _gdf["Country Tier"] = _gdf["Country"].apply(_country_tier)
-                if "Status" not in _gdf.columns:
-                    _gdf["Status"] = _gdf["Last Updated"].apply(_pkg_status)
+            else:
+                _gdf = df.copy()
+                if "Country" not in _gdf.columns:
+                    _gdf["Country"] = "Unknown"
+                if "Country Tier" not in _gdf.columns:
+                    _gdf["Country Tier"] = "❓ Unrated"
+                if _geo_df is None:
+                    st.warning(
+                        "Country data unavailable — C5 (Country Risk) will show "
+                        "'unverified' for all packages. All other checks run normally.",
+                        icon="⚠️",
+                    )
+            if "Status" not in _gdf.columns:
+                _gdf["Status"] = _gdf["Last Updated"].apply(_pkg_status)
 
+            if True:  # always run security audit
                 # ═══════════════════════════════════════════════════════════════
-                # NEW SECTION — Per-Library Security Audit
-                # Runs all registered checks (_SECURITY_CHECKS) for every library
-                # and shows results as a per-row breakdown.
+                # Per-Library Security Audit
                 # ═══════════════════════════════════════════════════════════════
                 st.markdown(
                     '<div class="sec-label">🔍 Per-Library Security Audit</div>',
@@ -8382,6 +8389,9 @@ if "scan_data" in st.session_state:
 
 
                 st.markdown("---")
+
+            # ── Geographic analysis — only when country data is loaded ────────
+            if _geo_df is not None and "Country" in _geo_df.columns:
 
                 # ── Section 1: Risk Tier Breakdown ────────────────────────────
                 _trusted    = (_gdf["Country Tier"] == "Trusted").sum()
