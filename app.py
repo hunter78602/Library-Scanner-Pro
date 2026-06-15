@@ -182,11 +182,18 @@ TIMEOUT      = 9
 # Local:      postgresql://postgres:postgres@localhost:5432/registry_intel
 # Production: set DATABASE_URL to your cloud provider's connection string
 def _load_db_url() -> str:
-    # 1. Environment variable (GitHub Actions, .env, system env)
+    # 1. Streamlit Cloud secrets (st.secrets) — primary on cloud deployments
+    try:
+        _v = st.secrets.get("DATABASE_URL", "")
+        if _v and "PASTE_YOUR" not in _v:
+            return _v
+    except Exception:
+        pass
+    # 2. Environment variable (GitHub Actions, .env, system env)
     url = os.environ.get("DATABASE_URL", "")
     if url and "PASTE_YOUR" not in url:
         return url
-    # 2. Read .streamlit/secrets.toml directly (reliable at module load time)
+    # 3. Read .streamlit/secrets.toml directly (local dev)
     try:
         _s = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                           ".streamlit", "secrets.toml")
@@ -202,15 +209,27 @@ def _load_db_url() -> str:
                                 return _v
     except Exception:
         pass
-    # 3. Fallback: localhost (dev only)
+    # 4. Fallback: localhost (dev only)
     return "postgresql://postgres:postgres@localhost:5432/registry_intel"
 
 DATABASE_URL = _load_db_url()
 
 # ── Telegram config ────────────────────────────────────────────────────────────
 def _load_telegram_config() -> tuple:
+    # 1. Streamlit Cloud secrets
+    try:
+        token   = st.secrets.get("TELEGRAM_BOT_TOKEN", "")
+        chat_id = st.secrets.get("TELEGRAM_CHAT_ID",   "")
+        if token and chat_id:
+            return token, chat_id
+    except Exception:
+        pass
+    # 2. Environment variables
     token   = os.environ.get("TELEGRAM_BOT_TOKEN", "")
     chat_id = os.environ.get("TELEGRAM_CHAT_ID",   "")
+    if token and chat_id:
+        return token, chat_id
+    # 3. Local secrets.toml
     try:
         _s = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                           ".streamlit", "secrets.toml")
