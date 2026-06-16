@@ -7305,8 +7305,6 @@ def run_audit(query, github_token=None, kaggle_username=None, kaggle_key=None,
 
 # ── Sidebar ────────────────────────────────────────────────────────────────────
 with st.sidebar:
-    _db_ok = "✅" if _pg_pool is not None else "⚠️ DB not connected"
-    st.caption(f"build:43a5d97 · db:{_db_ok}")
     st.markdown("""
     <div style="padding:0.5rem 0 1rem">
       <div style="color:#06b6d4;font-size:1rem;font-weight:800;letter-spacing:-0.3px">
@@ -7384,53 +7382,7 @@ with st.sidebar:
     nexus_repo_creds = st.text_input("user:password (optional)", type="password",
                                      placeholder="admin:password", key="nxs_creds")
 
-    pass  # GitHub Actions Monitor is rendered in a separate sidebar block below
-
-    # ── Custom Rules / Blocklist (CSV or JSON) ────────────────────────────────
-    # Users upload their own pattern-based rules that deduct from each package's
-    # Risk Score. Matching is shown inline in a new "Custom Flags" column.
-    try:
-        st.markdown('<div class="sb-label">Custom Rules / Blocklist</div>',
-                    unsafe_allow_html=True)
-        st.caption("Upload CSV/JSON. Matches deduct from Risk Score (UTF-8 only).")
-
-        _uploaded_rules = st.file_uploader(
-            "Rules file", type=["csv","json"],
-            key="custom_rules_upload", label_visibility="collapsed",
-            help="Columns: rule_id, name, field, match_type, pattern, severity, [emoji]"
-        )
-        # Reload only when the filename actually changes
-        if (_uploaded_rules is not None
-                and st.session_state.get("custom_rules_filename") != _uploaded_rules.name):
-            _new_rules, _new_warns = _load_custom_rules(_uploaded_rules)
-            st.session_state["custom_rules"]          = _new_rules
-            st.session_state["custom_rules_filename"] = _uploaded_rules.name
-            st.session_state["custom_rules_warnings"] = _new_warns
-
-        _loaded_rules = st.session_state.get("custom_rules", [])
-        if _loaded_rules:
-            st.success(
-                f"✓ {len(_loaded_rules)} rule{'s' if len(_loaded_rules) > 1 else ''} "
-                f"loaded from `{st.session_state.get('custom_rules_filename','file')}`"
-            )
-            with st.expander("Preview loaded rules", expanded=False):
-                _preview = [
-                    {"ID": r["rule_id"], "Name": r["name"], "Field": r["field"],
-                     "Match": r["match_type"], "Pattern": r["pattern"],
-                     "Severity": r["severity"]}
-                    for r in _loaded_rules
-                ]
-                st.dataframe(_preview, use_container_width=True, hide_index=True)
-            for _w in st.session_state.get("custom_rules_warnings", []):
-                st.warning(_w)
-            if st.button("Clear rules", key="clear_custom_rules",
-                         use_container_width=True):
-                for _k in ("custom_rules","custom_rules_filename",
-                           "custom_rules_warnings","custom_rules_upload"):
-                    st.session_state.pop(_k, None)
-                st.rerun()
-    except Exception as _cr_err:
-        st.caption(f"Custom Rules unavailable: {_cr_err}")
+    pass
 
 kaggle_username, kaggle_key_val = "", ""
 try:
