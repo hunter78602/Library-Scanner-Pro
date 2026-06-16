@@ -2,7 +2,7 @@ import streamlit as st
 import re
 import requests, pandas as pd, json, time, datetime
 import os, pathlib, atexit
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError as _FutureTimeoutError
 from contextlib import contextmanager
 
 # ── psycopg2 (PostgreSQL driver) ───────────────────────────────────────────────
@@ -1002,9 +1002,10 @@ def _auto_enroll_to_yaml(scan_rows: list):
     if not _new_entries:
         return
     try:
+        import json as _json
         with open(_yaml_path, "a", encoding="utf-8") as _f:
             for _lib, _reg in _new_entries:
-                _f.write(f"\n  - name: {_lib}\n    registry: {_reg}\n")
+                _f.write(f"\n  - name: {_json.dumps(_lib)}\n    registry: {_json.dumps(_reg)}\n")
     except Exception:
         pass
 
@@ -2003,12 +2004,17 @@ def _enrich_countries(df, github_token: str = "") -> "pd.DataFrame":
         with ThreadPoolExecutor(max_workers=8) as _ex:
             _futures = {_ex.submit(_fetch_github_country, n, github_token): n
                         for n in unique_names}
-            for _fut in as_completed(_futures):
-                _name = _futures[_fut]
-                try:
-                    name_to_country[_name] = _fut.result() or "Unknown"
-                except Exception:
-                    name_to_country[_name] = "Unknown"
+            try:
+                for _fut in as_completed(_futures, timeout=45):
+                    _name = _futures[_fut]
+                    try:
+                        name_to_country[_name] = _fut.result() or "Unknown"
+                    except Exception:
+                        name_to_country[_name] = "Unknown"
+            except _FutureTimeoutError:
+                for _fut, _name in _futures.items():
+                    if _name not in name_to_country:
+                        name_to_country[_name] = "Unknown"
 
     # ── Pass 3b: org top-contributor lookup ───────────────────────────────
     # When an org has no public location ("❓ Org"), fetch its top contributor
@@ -2049,26 +2055,34 @@ def _enrich_countries(df, github_token: str = "") -> "pd.DataFrame":
         with ThreadPoolExecutor(max_workers=4) as _ex:
             _cfuts = {_ex.submit(_fetch_top_contributor, rp): org
                       for org, rp in _org_repo_map.items()}
-            for _fut in as_completed(_cfuts):
-                _org = _cfuts[_fut]
-                try:
-                    _contrib = _fut.result() or ""
-                    if _contrib:
-                        org_to_contributor[_org] = _contrib
-                except Exception:
-                    pass
+            try:
+                for _fut in as_completed(_cfuts, timeout=45):
+                    _org = _cfuts[_fut]
+                    try:
+                        _contrib = _fut.result() or ""
+                        if _contrib:
+                            org_to_contributor[_org] = _contrib
+                    except Exception:
+                        pass
+            except _FutureTimeoutError:
+                pass
 
         _new_names = set(org_to_contributor.values()) - set(name_to_country.keys())
         if _new_names:
             with ThreadPoolExecutor(max_workers=4) as _ex:
                 _nfuts = {_ex.submit(_fetch_github_country, n, github_token): n
                           for n in _new_names}
-                for _fut in as_completed(_nfuts):
-                    _n = _nfuts[_fut]
-                    try:
-                        name_to_country[_n] = _fut.result() or "Unknown"
-                    except Exception:
-                        name_to_country[_n] = "Unknown"
+                try:
+                    for _fut in as_completed(_nfuts, timeout=45):
+                        _n = _nfuts[_fut]
+                        try:
+                            name_to_country[_n] = _fut.result() or "Unknown"
+                        except Exception:
+                            name_to_country[_n] = "Unknown"
+                except _FutureTimeoutError:
+                    for _fut, _n in _nfuts.items():
+                        if _n not in name_to_country:
+                            name_to_country[_n] = "Unknown"
 
     # ── Pass 4: stitch per-row country + collect repo-search candidates ───
     # Resolution order per row:
@@ -2140,12 +2154,17 @@ def _enrich_countries(df, github_token: str = "") -> "pd.DataFrame":
         with ThreadPoolExecutor(max_workers=4) as _ex:
             _futs = {_ex.submit(_country_via_repo_search, lib, github_token): lib
                      for lib in unique_libs}
-            for _fut in as_completed(_futs):
-                _lib = _futs[_fut]
-                try:
-                    lib_to_country[_lib] = _fut.result() or "Unknown"
-                except Exception:
-                    lib_to_country[_lib] = "Unknown"
+            try:
+                for _fut in as_completed(_futs, timeout=45):
+                    _lib = _futs[_fut]
+                    try:
+                        lib_to_country[_lib] = _fut.result() or "Unknown"
+                    except Exception:
+                        lib_to_country[_lib] = "Unknown"
+            except _FutureTimeoutError:
+                for _fut, _lib in _futs.items():
+                    if _lib not in lib_to_country:
+                        lib_to_country[_lib] = "Unknown"
         # Apply repo-search results back to the corresponding rows
         for idx, lib in repo_search_queue:
             c = lib_to_country.get(lib, "Unknown")
@@ -7295,10 +7314,18 @@ def run_audit(query, github_token=None, kaggle_username=None, kaggle_key=None,
             return [], f"{name}: {_ename}: {_emsg}"
 
     with ThreadPoolExecutor(max_workers=16) as ex:
-        for fut in as_completed([ex.submit(_run,a) for a in adapters]):
-            data, err = fut.result()
-            results.extend(data)
-            if err: errors.append(err)
+        _futs = [ex.submit(_run, a) for a in adapters]
+        try:
+            # Hard ceiling on the whole adapter fan-out: a single registry call
+            # that hangs past its own timeout (e.g. a DNS-level stall that
+            # requests' timeout= doesn't catch) must not block this package —
+            # or the outer per-target loop — forever.
+            for fut in as_completed(_futs, timeout=45):
+                data, err = fut.result()
+                results.extend(data)
+                if err: errors.append(err)
+        except _FutureTimeoutError:
+            errors.append((query, "One or more registries did not respond in time and were skipped"))
 
     return results, errors, search_mode
 
