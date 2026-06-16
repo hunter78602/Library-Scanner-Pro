@@ -8243,6 +8243,12 @@ if "scan_data" in st.session_state:
                     },
                 )
 
+                # ── Auto-enroll newly scanned packages into packages.yaml + DB ──
+                try:
+                    _auto_enroll_to_yaml(_audit_rows)
+                except Exception:
+                    pass
+
                 _ac1, _ac2, _ac3, _ac4 = st.columns(4)
                 _ac1.metric("Critical", f"{int(_au_crit)}",
                             f"{_au_crit/_au_tot*100:.0f}%" if _au_tot else "0%")
