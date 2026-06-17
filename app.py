@@ -934,6 +934,7 @@ def _monitored_get_all() -> list:
             cur.execute(
                 """SELECT m.library, m.registry,
                           m.enrolled_at, m.last_checked, m.next_check_at,
+                          COALESCE(m.source, 'manual') AS source,
                           s.snapshot, s.snapped_at
                    FROM monitored_packages m
                    LEFT JOIN LATERAL (
@@ -10331,9 +10332,11 @@ with _mon_packages_tab:
             _enrolled = str(_mp.get("enrolled_at",   "") or "")[:10]
             _checked  = str(_mp.get("last_checked",  "") or "—")[:16].replace("T", " ")
             _next_chk = str(_mp.get("next_check_at", "") or "—")[:16].replace("T", " ")
+            _src = _mp.get("source") or "manual"
             _mon_rows.append({
                 "Library":      _mp.get("library",  ""),
                 "Registry":     _mp.get("registry", ""),
+                "Source":       "🤖 Auto-discovered" if _src == "auto_discover" else "👤 Manual",
                 "Enrolled":     _enrolled,
                 "Last Checked": _checked,
                 "Next Check":   _next_chk,
@@ -10351,6 +10354,7 @@ with _mon_packages_tab:
             column_config={
                 "Library":      st.column_config.TextColumn("Library",      width="medium"),
                 "Registry":     st.column_config.TextColumn("Registry",     width="small"),
+                "Source":       st.column_config.TextColumn("Source",       width="small"),
                 "Enrolled":     st.column_config.TextColumn("Enrolled",     width="small"),
                 "Last Checked": st.column_config.TextColumn("Last Checked", width="medium"),
                 "Next Check":   st.column_config.TextColumn("Next Check",   width="medium"),

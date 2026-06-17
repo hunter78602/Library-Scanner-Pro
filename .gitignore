@@ -5,6 +5,7 @@
 !runtime.txt
 !monitor_job.py
 !bulk_enroll.py
+!auto_discover.py
 !packages.yaml
 !.github/
 !.github/**
